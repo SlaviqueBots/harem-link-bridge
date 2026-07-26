@@ -503,7 +503,7 @@ class LinkBridgeApp(tk.Tk):
                 lambda: (
                     self.status_var.set("Restarting into new version…"),
                     self._append_log(f"Installing v{info.version}"),
-                    self.after(400, self.quit_app),
+                    self.after(800, self.quit_app),
                 )
             )
         else:
