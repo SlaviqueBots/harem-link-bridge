@@ -17,7 +17,7 @@ Client-only. No bot tokens or server secrets live here. Compare builds to these 
 4. Wait until status says **Connected**. Closing the window keeps it in the tray.
 5. Optional: tick **Start with Windows** (and **Start in tray**).
 
-Links open with the browser brought to the front by default. Untick **Bring browser to front** for quiet background tabs (old behaviour).
+Links open with the browser brought to the front by default. Untick **Bring browser to front** for quiet background tabs (Windows: open without keeping focus).
 
 Left **double-click** the tray icon to show the window (or right-click → Show).
 

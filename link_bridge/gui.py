@@ -406,6 +406,7 @@ class LinkBridgeApp(tk.Tk):
     def _on_focus_toggle(self) -> None:
         self.cfg.focus_browser = bool(self.focus_var.get())
         save_config(self.cfg)
+        # Keep live open path in sync even if Save wasn't clicked.
         self._append_log(
             "Browser focus on"
             if self.cfg.focus_browser

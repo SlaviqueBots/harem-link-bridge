@@ -4,9 +4,9 @@ Flow:
   1. GET ``http://{host}:{update_port}/version.json``
   2. If remote version > local, download beside the exe as ``*.exe.new``
   3. Write ``_update_bridge.ps1`` that waits for this process to exit, swaps the
-     exe (rename old aside, move new in), then ``Start-Process`` with an explicit
-     working directory (fixes PyInstaller "Failed to load Python DLL" on relaunch)
-  4. Launch PowerShell detached and quit
+     exe (rename old aside, copy new in), then launches with an explicit working
+     directory and verifies the process is alive
+  4. Launch PowerShell via ``cmd start`` (fully detached) and quit
 """
 
 from __future__ import annotations
@@ -33,9 +33,6 @@ MANIFEST_NAME = "version.json"
 UPDATE_BAT = "_update_bridge.bat"
 UPDATE_PS1 = "_update_bridge.ps1"
 CREATE_NO_WINDOW = 0x08000000
-# Detached so the updater outlives a hard kill of the GUI process tree.
-DETACHED_PROCESS = 0x00000008
-CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 @dataclass
@@ -144,44 +141,49 @@ def download_update(info: UpdateInfo, dest: Path, *, timeout: float = 120.0) -> 
 
 
 def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
-    """PowerShell swap+relaunch. Avoids cmd ``start`` cwd bugs that break PyInstaller DLLs."""
+    """PowerShell swap+relaunch with process verification."""
     target = str(current)
     new_path = str(new_exe)
     workdir = str(current.parent)
     bak = str(current) + ".bak"
     log_path = str(current.parent / "_update_fail.txt")
-    # Single-quoted paths in PS; escape any single quotes by doubling.
+    proc_name = current.stem
+
     def q(p: str) -> str:
         return "'" + p.replace("'", "''") + "'"
 
     return "\r\n".join(
         [
-            "$ErrorActionPreference = 'Stop'",
+            "$ErrorActionPreference = 'Continue'",
             f"$pidToWait = {int(pid)}",
             f"$target = {q(target)}",
             f"$new = {q(new_path)}",
             f"$bak = {q(bak)}",
             f"$workdir = {q(workdir)}",
             f"$log = {q(log_path)}",
+            f"$procName = {q(proc_name)}",
             "function Write-Fail([string]$msg) {",
             "  Set-Content -LiteralPath $log -Value $msg -Encoding UTF8",
             "}",
+            "function Test-BridgeRunning {",
+            "  return [bool](Get-Process -Name $procName -ErrorAction SilentlyContinue)",
+            "}",
             "try {",
-            "  $deadline = (Get-Date).AddSeconds(90)",
+            "  $deadline = (Get-Date).AddSeconds(120)",
             "  while ((Get-Date) -lt $deadline) {",
             "    $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue",
             "    if (-not $proc) { break }",
             "    Start-Sleep -Milliseconds 400",
             "  }",
-            "  Start-Sleep -Seconds 1",
+            "  Start-Sleep -Seconds 2",
             "  if (Test-Path -LiteralPath $bak) {",
             "    Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  }",
             "  $renamed = $false",
-            "  for ($i = 0; $i -lt 40; $i++) {",
+            "  for ($i = 0; $i -lt 50; $i++) {",
             "    if (-not (Test-Path -LiteralPath $target)) { $renamed = $true; break }",
             "    try {",
-            "      Move-Item -LiteralPath $target -Destination $bak -Force",
+            "      Move-Item -LiteralPath $target -Destination $bak -Force -ErrorAction Stop",
             "      $renamed = $true",
             "      break",
             "    } catch {",
@@ -192,42 +194,48 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "    Write-Fail 'rename_old_failed'",
             "    exit 1",
             "  }",
-            "  $moved = $false",
-            "  for ($i = 0; $i -lt 40; $i++) {",
+            "  $copied = $false",
+            "  for ($i = 0; $i -lt 50; $i++) {",
             "    try {",
-            "      Move-Item -LiteralPath $new -Destination $target -Force",
-            "      $moved = $true",
+            "      Copy-Item -LiteralPath $new -Destination $target -Force -ErrorAction Stop",
+            "      Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue",
+            "      $copied = $true",
             "      break",
             "    } catch {",
             "      Start-Sleep -Milliseconds 500",
             "    }",
             "  }",
-            "  if (-not $moved -or -not (Test-Path -LiteralPath $target)) {",
-            "    Write-Fail 'move_new_failed'",
+            "  if (-not $copied -or -not (Test-Path -LiteralPath $target)) {",
+            "    Write-Fail 'copy_new_failed'",
             "    if (Test-Path -LiteralPath $bak) {",
             "      Move-Item -LiteralPath $bak -Destination $target -Force -ErrorAction SilentlyContinue",
             "    }",
             "    exit 1",
             "  }",
-            "  # Let Defender/AV finish touching the new image before bootloader reads it.",
-            "  Start-Sleep -Seconds 2",
+            "  Start-Sleep -Seconds 3",
             "  $launched = $false",
-            "  for ($i = 0; $i -lt 8; $i++) {",
+            "  for ($i = 0; $i -lt 10; $i++) {",
             "    try {",
-            "      Start-Process -FilePath $target -WorkingDirectory $workdir",
-            "      $launched = $true",
-            "      break",
+            "      $psi = New-Object System.Diagnostics.ProcessStartInfo",
+            "      $psi.FileName = $target",
+            "      $psi.WorkingDirectory = $workdir",
+            "      $psi.UseShellExecute = $true",
+            "      [Diagnostics.Process]::Start($psi) | Out-Null",
             "    } catch {",
-            "      Start-Sleep -Seconds 1",
+            "      try { Start-Process -FilePath $target -WorkingDirectory $workdir | Out-Null } catch {}",
             "    }",
+            "    Start-Sleep -Seconds 2",
+            "    if (Test-BridgeRunning) { $launched = $true; break }",
+            "    Start-Sleep -Seconds 1",
             "  }",
             "  if (-not $launched) {",
-            "    Write-Fail 'start_failed'",
+            "    Write-Fail 'start_failed_no_process'",
             "    exit 1",
             "  }",
             "  Start-Sleep -Seconds 2",
             "  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }",
+            "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
             "  exit 0",
             "} catch {",
             "  Write-Fail $_.Exception.Message",
@@ -264,14 +272,18 @@ def apply_update_and_restart(new_exe: Path) -> None:
         build_update_ps1(pid=os.getpid(), current=current, new_exe=new_exe),
         encoding="utf-8",
     )
-    # Optional bat for older debugging; PS is launched directly.
     bat.write_text(
         build_update_bat(pid=os.getpid(), current=current, new_exe=new_exe),
         encoding="utf-8",
     )
-    flags = CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    # ``cmd /c start`` fully detaches the updater from our process tree.
     subprocess.Popen(
         [
+            "cmd.exe",
+            "/c",
+            "start",
+            "",
+            "/MIN",
             "powershell.exe",
             "-NoProfile",
             "-ExecutionPolicy",
@@ -283,7 +295,7 @@ def apply_update_and_restart(new_exe: Path) -> None:
         ],
         cwd=str(directory),
         close_fds=True,
-        creationflags=flags,
+        creationflags=CREATE_NO_WINDOW,
     )
 
 
