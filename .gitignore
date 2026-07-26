@@ -1,0 +1,11 @@
+﻿# Local config with secrets — never commit
+harem_link_bridge.json
+*.exe
+*.exe.new
+*.exe.bak
+_update_bridge.bat
+_update_fail.txt
+__pycache__/
+*.pyc
+build/
+dist/

@@ -1,0 +1,16 @@
+{
+  "host": "108.165.174.158",
+  "port": 8765,
+  "token": "",
+  "user_id": 0,
+  "device_id": "",
+  "device_token": "",
+  "paused": false,
+  "mute_auc_dm": true,
+  "start_hidden": false,
+  "open_browser": true,
+  "autostart": false,
+  "check_updates": true,
+  "update_port": 8766,
+  "update_url": ""
+}
