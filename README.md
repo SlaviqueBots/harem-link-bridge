@@ -1,32 +1,42 @@
-﻿# Harem Link Bridge
+# Harem Link Bridge
 
-Opens the bot's Danbooru/Rule34 **link buttons** in your desktop browser (no Telegram confirm dialog).
+Opens the bot’s Danbooru/Rule34 **link buttons** in your desktop browser (no Telegram confirm dialog).
 
-**This repository is the public source for the Windows companion.**  
-Client-only. No bot tokens or server secrets. Compare the `.exe` behavior to these files.
+**Source (this repo):** https://github.com/SlaviqueBots/harem-link-bridge  
 
-Repo: https://github.com/SlaviqueBots/harem-link-bridge
+**Releases (`.exe`):** https://github.com/SlaviqueBots/harem-link-bridge/releases
 
-## Install (users)
+Client-only. No bot tokens or server secrets live here. Compare builds to these files.
 
-1. Get `HaremLinkBridge.exe` from the owner.
-2. Double-click → **Pair with Telegram** (or Alternate Method: DM `/bridge` then **Enter code…**).
-3. Wait for **Connected**. Close = tray. Optional: **Start with Windows**.
+## First users — install
 
-Auction DMs off by default (tick **Enable auction DMs** to turn on).
+1. Get `HaremLinkBridge.exe` from the owner (one file).
+2. Put it in any folder (e.g. Desktop) and double-click.
+3. In the app follow **Setup**: **Pair with Telegram** → confirm in Telegram.
+   - Alternate Method: DM the bot `/bridge`, then **Enter code…** in the app.
+4. Wait until status says **Connected**. Closing the window keeps it in the tray.
+5. Optional: tick **Start with Windows** (and **Start in tray**).
+
+Left **double-click** the tray icon to show the window (or right-click → Show).
+
+In the app, **Source code** opens this repository.
+
+## Updates
+
+The app checks for a newer build on startup and can self-update. Your
+`harem_link_bridge.json` next to the exe is never overwritten.
 
 ## Build from source
 
 ```bat
-pip install -r link_bridge/requirements.txt
-pyinstaller --noconfirm link_bridge/harem_link_bridge.spec
+pip install -r requirements.txt
+pyinstaller --noconfirm harem_link_bridge.spec
 ```
 
-Output: `dist/HaremLinkBridge.exe`
+## What this is / isn’t
 
-## Layout
-
-```
-link_bridge/     Python package (GUI, WS client, updater, autostart)
-LICENSE          MIT
-```
+| Included | Not included |
+|----------|----------------|
+| Desktop companion UI + WebSocket client | Telegram bot server |
+| Pairing / autostart / auto-update client | Database, economy, tokens |
+| Example config (no secrets) | Your personal `harem_link_bridge.json` |

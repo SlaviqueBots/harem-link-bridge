@@ -83,8 +83,6 @@ class LinkBridgeApp(tk.Tk):
         opts = ttk.Frame(root)
         opts.pack(fill=tk.X, **pad)
         self.paused_var = tk.BooleanVar(value=self.cfg.paused)
-        # UI is "enable"; config stores mute (default muted).
-        self.enable_auc_var = tk.BooleanVar(value=not self.cfg.mute_auc_dm)
         self.open_var = tk.BooleanVar(value=self.cfg.open_browser)
         self.hidden_var = tk.BooleanVar(value=self.cfg.start_hidden)
         self.autostart_var = tk.BooleanVar(value=self._autostart_initial())
@@ -94,12 +92,6 @@ class LinkBridgeApp(tk.Tk):
             variable=self.paused_var,
             command=self._on_pause_toggle,
         ).pack(side=tk.LEFT)
-        ttk.Checkbutton(
-            opts,
-            text="Enable auction DMs",
-            variable=self.enable_auc_var,
-            command=self._on_enable_auc_toggle,
-        ).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Checkbutton(opts, text="Open in browser", variable=self.open_var).pack(
             side=tk.LEFT, padx=(12, 0)
         )
@@ -209,7 +201,6 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.host = host
         self.cfg.port = port
         self.cfg.paused = bool(self.paused_var.get())
-        self.cfg.mute_auc_dm = not bool(self.enable_auc_var.get())
         self.cfg.open_browser = bool(self.open_var.get())
         self.cfg.start_hidden = bool(self.hidden_var.get())
         self.cfg.autostart = bool(self.autostart_var.get())
@@ -412,23 +403,6 @@ class LinkBridgeApp(tk.Tk):
 
         def _go() -> None:
             asyncio.create_task(client.set_paused(paused))
-
-        loop.call_soon_threadsafe(_go)
-
-    def _on_enable_auc_toggle(self) -> None:
-        muted = not bool(self.enable_auc_var.get())
-        self.cfg.mute_auc_dm = muted
-        save_config(self.cfg)
-        self._append_log(
-            "Auction DMs enabled" if not muted else "Auction DMs disabled (default)"
-        )
-        client = self._client
-        loop = self._loop
-        if client is None or loop is None or not loop.is_running():
-            return
-
-        def _go() -> None:
-            asyncio.create_task(client.set_mute_auc_dm(muted))
 
         loop.call_soon_threadsafe(_go)
 

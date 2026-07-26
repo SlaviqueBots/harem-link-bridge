@@ -30,8 +30,6 @@ class BridgeConfig:
     device_id: str = ""
     device_token: str = ""
     paused: bool = False
-    # Default muted — UI exposes the inverse: "Enable auction DMs".
-    mute_auc_dm: bool = True
     start_hidden: bool = False
     open_browser: bool = True
     autostart: bool = False
@@ -87,9 +85,6 @@ def load_config() -> BridgeConfig:
         device_id=str(raw.get("device_id") or ""),
         device_token=str(raw.get("device_token") or ""),
         paused=bool(raw.get("paused", False)),
-        mute_auc_dm=(
-            bool(raw["mute_auc_dm"]) if "mute_auc_dm" in raw else True
-        ),
         start_hidden=bool(raw.get("start_hidden", False)),
         open_browser=bool(raw.get("open_browser", True)),
         autostart=bool(raw.get("autostart", False)),

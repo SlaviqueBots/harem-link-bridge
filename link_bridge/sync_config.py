@@ -62,7 +62,6 @@ def sync_config(*, start_hidden: bool = False) -> Path:
         device_id=existing.device_id,
         device_token=existing.device_token,
         paused=existing.paused,
-        mute_auc_dm=existing.mute_auc_dm,
         start_hidden=start_hidden if start_hidden else existing.start_hidden,
         open_browser=existing.open_browser,
         autostart=existing.autostart,

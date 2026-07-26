@@ -32,7 +32,6 @@ class BridgeClient:
         self._ws: Any = None
         self._stop = asyncio.Event()
         self._paused = bool(cfg.paused)
-        self._mute_auc_dm = bool(cfg.mute_auc_dm)
         self._task: asyncio.Task | None = None
 
     @property
@@ -49,18 +48,6 @@ class BridgeClient:
         if ws is None:
             return
         op = "pause" if self._paused else "resume"
-        try:
-            await ws.send(json.dumps({"op": op}))
-        except Exception:
-            logger.exception("failed to send %s", op)
-
-    async def set_mute_auc_dm(self, muted: bool) -> None:
-        self._mute_auc_dm = bool(muted)
-        self.cfg.mute_auc_dm = self._mute_auc_dm
-        ws = self._ws
-        if ws is None:
-            return
-        op = "mute_auc_dm" if self._mute_auc_dm else "unmute_auc_dm"
         try:
             await ws.send(json.dumps({"op": op}))
         except Exception:
@@ -107,12 +94,8 @@ class BridgeClient:
                 raise RuntimeError(f"hello rejected: {msg!r}")
             if self._paused:
                 await ws.send(json.dumps({"op": "pause"}))
-            if self._mute_auc_dm:
-                await ws.send(json.dumps({"op": "mute_auc_dm"}))
             self.on_status(
-                "Connected."
-                + (" (paused)" if self._paused else "")
-                + (" (auc DMs muted)" if self._mute_auc_dm else "")
+                "Connected." + (" (paused)" if self._paused else "")
             )
             async for message in ws:
                 if self._stop.is_set():
