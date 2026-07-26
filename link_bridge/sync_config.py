@@ -64,6 +64,7 @@ def sync_config(*, start_hidden: bool = False) -> Path:
         paused=existing.paused,
         start_hidden=start_hidden if start_hidden else existing.start_hidden,
         open_browser=existing.open_browser,
+        focus_browser=existing.focus_browser,
         autostart=existing.autostart,
         check_updates=existing.check_updates,
         update_port=existing.update_port,

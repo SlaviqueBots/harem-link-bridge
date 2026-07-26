@@ -84,6 +84,7 @@ class LinkBridgeApp(tk.Tk):
         opts.pack(fill=tk.X, **pad)
         self.paused_var = tk.BooleanVar(value=self.cfg.paused)
         self.open_var = tk.BooleanVar(value=self.cfg.open_browser)
+        self.focus_var = tk.BooleanVar(value=self.cfg.focus_browser)
         self.hidden_var = tk.BooleanVar(value=self.cfg.start_hidden)
         self.autostart_var = tk.BooleanVar(value=self._autostart_initial())
         ttk.Checkbutton(
@@ -95,6 +96,12 @@ class LinkBridgeApp(tk.Tk):
         ttk.Checkbutton(opts, text="Open in browser", variable=self.open_var).pack(
             side=tk.LEFT, padx=(12, 0)
         )
+        ttk.Checkbutton(
+            opts,
+            text="Bring browser to front",
+            variable=self.focus_var,
+            command=self._on_focus_toggle,
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
         opts2 = ttk.Frame(root)
         opts2.pack(fill=tk.X, **pad)
@@ -156,8 +163,9 @@ class LinkBridgeApp(tk.Tk):
 
     def _open_source(self) -> None:
         from link_bridge import SOURCE_URL
+        from link_bridge.browser_open import open_url
 
-        webbrowser.open(SOURCE_URL)
+        open_url(SOURCE_URL, focus=True)
         self._append_log(f"Source: {SOURCE_URL}")
 
     def _autostart_initial(self) -> bool:
@@ -202,6 +210,7 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.port = port
         self.cfg.paused = bool(self.paused_var.get())
         self.cfg.open_browser = bool(self.open_var.get())
+        self.cfg.focus_browser = bool(self.focus_var.get())
         self.cfg.start_hidden = bool(self.hidden_var.get())
         self.cfg.autostart = bool(self.autostart_var.get())
         self.cfg.ensure_device_id()
@@ -388,9 +397,20 @@ class LinkBridgeApp(tk.Tk):
         self._append_log(f"Open: {url}")
         if self.open_var.get():
             try:
-                webbrowser.open(url)
+                from link_bridge.browser_open import open_url
+
+                open_url(url, focus=bool(self.focus_var.get()))
             except Exception as exc:
                 self._append_log(f"browser open failed: {exc}")
+
+    def _on_focus_toggle(self) -> None:
+        self.cfg.focus_browser = bool(self.focus_var.get())
+        save_config(self.cfg)
+        self._append_log(
+            "Browser focus on"
+            if self.cfg.focus_browser
+            else "Browser focus off (quiet tabs)"
+        )
 
     def _on_pause_toggle(self) -> None:
         paused = bool(self.paused_var.get())

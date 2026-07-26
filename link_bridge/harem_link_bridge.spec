@@ -26,6 +26,7 @@ a = Analysis(
         "link_bridge.ws_client",
         "link_bridge.updater",
         "link_bridge.autostart",
+        "link_bridge.browser_open",
         "websockets",
         "websockets.asyncio",
         "websockets.asyncio.client",

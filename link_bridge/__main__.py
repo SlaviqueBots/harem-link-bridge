@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import logging
 import sys
-import webbrowser
 from pathlib import Path
 
 
@@ -77,7 +76,9 @@ def _run_cli() -> int:
     def on_open(url: str) -> None:
         print(f"OPEN {url}", flush=True)
         if cfg.open_browser:
-            webbrowser.open(url)
+            from link_bridge.browser_open import open_url
+
+            open_url(url, focus=bool(cfg.focus_browser))
 
     client = BridgeClient(cfg, on_status=on_status, on_open_url=on_open)
     try:

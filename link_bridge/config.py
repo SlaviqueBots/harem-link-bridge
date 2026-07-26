@@ -32,6 +32,8 @@ class BridgeConfig:
     paused: bool = False
     start_hidden: bool = False
     open_browser: bool = True
+    # When opening links: bring browser to foreground (default). Off = quiet tab.
+    focus_browser: bool = True
     autostart: bool = False
     # Auto-update (HTTP beside the WS host, default port 8766).
     check_updates: bool = True
@@ -87,6 +89,7 @@ def load_config() -> BridgeConfig:
         paused=bool(raw.get("paused", False)),
         start_hidden=bool(raw.get("start_hidden", False)),
         open_browser=bool(raw.get("open_browser", True)),
+        focus_browser=bool(raw["focus_browser"]) if "focus_browser" in raw else True,
         autostart=bool(raw.get("autostart", False)),
         check_updates=bool(raw.get("check_updates", True)),
         update_port=int(raw.get("update_port") or BridgeConfig.update_port),
