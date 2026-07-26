@@ -8,7 +8,6 @@
   "paused": false,
   "start_hidden": false,
   "open_browser": true,
-  "focus_browser": true,
   "autostart": false,
   "check_updates": true,
   "update_port": 8766,

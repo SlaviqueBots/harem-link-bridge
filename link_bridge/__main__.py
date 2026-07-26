@@ -78,7 +78,7 @@ def _run_cli() -> int:
         if cfg.open_browser:
             from link_bridge.browser_open import open_url
 
-            open_url(url, focus=bool(cfg.focus_browser))
+            open_url(url)
 
     client = BridgeClient(cfg, on_status=on_status, on_open_url=on_open)
     try:
