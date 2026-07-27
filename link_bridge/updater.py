@@ -4,8 +4,9 @@ Flow:
   1. GET ``http://{host}:{update_port}/version.json``
   2. If remote version > local, download beside the exe as ``*.exe.new``
   3. Write ``_update_bridge.ps1`` that waits for this process to exit, swaps the
-     exe (rename old aside, copy new in), then launches with an explicit working
-     directory and verifies the process is alive
+     exe (rename old aside, copy new in), then opens the folder so the user can
+     start the new build themselves — no auto-relaunch (that path was unreliable
+     on Windows / PyInstaller)
   4. Launch PowerShell via ``cmd start`` (fully detached) and quit
 """
 
@@ -141,13 +142,12 @@ def download_update(info: UpdateInfo, dest: Path, *, timeout: float = 120.0) -> 
 
 
 def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
-    """PowerShell swap+relaunch with process verification."""
+    """PowerShell swap only — never relaunches the app."""
     target = str(current)
     new_path = str(new_exe)
-    workdir = str(current.parent)
     bak = str(current) + ".bak"
     log_path = str(current.parent / "_update_fail.txt")
-    proc_name = current.stem
+    note_path = str(current.parent / "_UPDATE_START_HERE.txt")
 
     def q(p: str) -> str:
         return "'" + p.replace("'", "''") + "'"
@@ -159,14 +159,10 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             f"$target = {q(target)}",
             f"$new = {q(new_path)}",
             f"$bak = {q(bak)}",
-            f"$workdir = {q(workdir)}",
             f"$log = {q(log_path)}",
-            f"$procName = {q(proc_name)}",
+            f"$note = {q(note_path)}",
             "function Write-Fail([string]$msg) {",
             "  Set-Content -LiteralPath $log -Value $msg -Encoding UTF8",
-            "}",
-            "function Test-BridgeRunning {",
-            "  return [bool](Get-Process -Name $procName -ErrorAction SilentlyContinue)",
             "}",
             "try {",
             "  $deadline = (Get-Date).AddSeconds(120)",
@@ -212,29 +208,10 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "    }",
             "    exit 1",
             "  }",
-            "  Start-Sleep -Seconds 3",
-            "  $launched = $false",
-            "  for ($i = 0; $i -lt 10; $i++) {",
-            "    try {",
-            "      $psi = New-Object System.Diagnostics.ProcessStartInfo",
-            "      $psi.FileName = $target",
-            "      $psi.WorkingDirectory = $workdir",
-            "      $psi.UseShellExecute = $true",
-            "      [Diagnostics.Process]::Start($psi) | Out-Null",
-            "    } catch {",
-            "      try { Start-Process -FilePath $target -WorkingDirectory $workdir | Out-Null } catch {}",
-            "    }",
-            "    Start-Sleep -Seconds 2",
-            "    if (Test-BridgeRunning) { $launched = $true; break }",
-            "    Start-Sleep -Seconds 1",
-            "  }",
-            "  if (-not $launched) {",
-            "    Write-Fail 'start_failed_no_process'",
-            "    exit 1",
-            "  }",
-            "  Start-Sleep -Seconds 2",
             "  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }",
+            "  Set-Content -LiteralPath $note -Value 'Update installed. Double-click HaremLinkBridge.exe to start.' -Encoding UTF8",
+            "  try { Start-Process explorer.exe -ArgumentList ('/select,' + $target) } catch {}",
             "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
             "  exit 0",
             "} catch {",
@@ -260,7 +237,7 @@ def build_update_bat(*, pid: int, current: Path, new_exe: Path) -> str:
 
 
 def apply_update_and_restart(new_exe: Path) -> None:
-    """Replace the running frozen exe via PowerShell, then exit."""
+    """Replace the running frozen exe via PowerShell (no relaunch), then exit."""
     current = _exe_path()
     if not getattr(sys, "frozen", False):
         logger.info("dev mode: downloaded update to %s (not applying)", new_exe)

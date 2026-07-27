@@ -473,7 +473,9 @@ class LinkBridgeApp(tk.Tk):
             ok = messagebox.askyesno(
                 "Harem Link Bridge",
                 f"Version {info.version} is available (you have {__version__}).\n\n"
-                "Download and install now? The app will restart.",
+                "Download and install now?\n\n"
+                "The app will close. After that, start HaremLinkBridge.exe yourself "
+                "(the install folder will open).",
             )
             if not ok:
                 return
@@ -500,14 +502,19 @@ class LinkBridgeApp(tk.Tk):
             )
             return
         if getattr(sys, "frozen", False):
-            # Give the updater bat a moment to attach before we tear down.
-            self._ui(
-                lambda: (
-                    self.status_var.set("Restarting into new version…"),
-                    self._append_log(f"Installing v{info.version}"),
-                    self.after(800, self.quit_app),
+            # Give the updater script a moment to attach before we tear down.
+            def _done() -> None:
+                self.status_var.set(f"Installed v{info.version} — start again.")
+                self._append_log(f"Installed v{info.version}; waiting for manual start")
+                messagebox.showinfo(
+                    "Harem Link Bridge",
+                    f"Version {info.version} is ready.\n\n"
+                    "This window will close. Then double-click HaremLinkBridge.exe "
+                    "in the folder that opens (or use your usual shortcut).",
                 )
-            )
+                self.after(400, self.quit_app)
+
+            self._ui(_done)
         else:
             self._ui(
                 lambda: messagebox.showinfo(
