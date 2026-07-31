@@ -16,6 +16,8 @@ Client-only. No bot tokens or server secrets live here. Compare builds to these 
    - Alternate Method: DM the bot `/bridge`, then **Enter code…** in the app.
 4. Wait until status says **Connected**. Closing the window keeps it in the tray.
 5. Optional: tick **Start with Windows** (and **Start in tray**).
+6. Optional: **Pause when PC locked (Win+L)** — auto-pauses while the
+   session is locked, resumes when you unlock (manual Pause still wins).
 
 Links open in your browser and bring it to the front.
 

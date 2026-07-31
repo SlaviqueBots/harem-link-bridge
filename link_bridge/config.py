@@ -30,6 +30,8 @@ class BridgeConfig:
     device_id: str = ""
     device_token: str = ""
     paused: bool = False
+    # When True, pause while Windows is locked (Win+L) and resume on unlock.
+    pause_on_lock: bool = False
     start_hidden: bool = False
     open_browser: bool = True
     autostart: bool = False
@@ -85,6 +87,7 @@ def load_config() -> BridgeConfig:
         device_id=str(raw.get("device_id") or ""),
         device_token=str(raw.get("device_token") or ""),
         paused=bool(raw.get("paused", False)),
+        pause_on_lock=bool(raw.get("pause_on_lock", False)),
         start_hidden=bool(raw.get("start_hidden", False)),
         open_browser=bool(raw.get("open_browser", True)),
         autostart=bool(raw.get("autostart", False)),

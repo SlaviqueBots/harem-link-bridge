@@ -6,6 +6,7 @@
   "device_id": "",
   "device_token": "",
   "paused": false,
+  "pause_on_lock": false,
   "start_hidden": false,
   "open_browser": true,
   "autostart": false,

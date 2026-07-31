@@ -33,6 +33,8 @@ class LinkBridgeApp(tk.Tk):
         self._tray = None
         self._quitting = False
         self._pair_stop = threading.Event()
+        self._lock_ctrl = None
+        self._lock_watcher = None
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
@@ -41,6 +43,8 @@ class LinkBridgeApp(tk.Tk):
             self.after(300, self.withdraw)
         if self.cfg.can_connect():
             self.after(400, self.start_bridge)
+        if self.cfg.pause_on_lock:
+            self.after(500, self._sync_pause_on_lock_watcher)
         if self.cfg.check_updates:
             self.after(1500, lambda: self.check_updates(silent=True))
 
@@ -83,6 +87,7 @@ class LinkBridgeApp(tk.Tk):
         opts = ttk.Frame(root)
         opts.pack(fill=tk.X, **pad)
         self.paused_var = tk.BooleanVar(value=self.cfg.paused)
+        self.pause_on_lock_var = tk.BooleanVar(value=self.cfg.pause_on_lock)
         self.open_var = tk.BooleanVar(value=self.cfg.open_browser)
         self.hidden_var = tk.BooleanVar(value=self.cfg.start_hidden)
         self.autostart_var = tk.BooleanVar(value=self._autostart_initial())
@@ -99,12 +104,20 @@ class LinkBridgeApp(tk.Tk):
         opts2.pack(fill=tk.X, **pad)
         ttk.Checkbutton(
             opts2,
+            text="Pause when PC locked (Win+L)",
+            variable=self.pause_on_lock_var,
+            command=self._on_pause_on_lock_toggle,
+        ).pack(side=tk.LEFT)
+        opts3 = ttk.Frame(root)
+        opts3.pack(fill=tk.X, **pad)
+        ttk.Checkbutton(
+            opts3,
             text="Start with Windows",
             variable=self.autostart_var,
             command=self._on_autostart_toggle,
         ).pack(side=tk.LEFT)
         ttk.Checkbutton(
-            opts2,
+            opts3,
             text="Start in tray",
             variable=self.hidden_var,
             command=self._on_start_hidden_toggle,
@@ -201,6 +214,7 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.host = host
         self.cfg.port = port
         self.cfg.paused = bool(self.paused_var.get())
+        self.cfg.pause_on_lock = bool(self.pause_on_lock_var.get())
         self.cfg.open_browser = bool(self.open_var.get())
         self.cfg.start_hidden = bool(self.hidden_var.get())
         self.cfg.autostart = bool(self.autostart_var.get())
@@ -395,9 +409,14 @@ class LinkBridgeApp(tk.Tk):
                 self._append_log(f"browser open failed: {exc}")
 
     def _on_pause_toggle(self) -> None:
+        if self._lock_ctrl is not None:
+            self._lock_ctrl.on_manual_change()
         paused = bool(self.paused_var.get())
         self.cfg.paused = paused
         save_config(self.cfg)
+        self._apply_paused_to_client(paused)
+
+    def _apply_paused_to_client(self, paused: bool) -> None:
         client = self._client
         loop = self._loop
         if client is None or loop is None or not loop.is_running():
@@ -407,6 +426,85 @@ class LinkBridgeApp(tk.Tk):
             asyncio.create_task(client.set_paused(paused))
 
         loop.call_soon_threadsafe(_go)
+
+    def _on_pause_on_lock_toggle(self) -> None:
+        enabled = bool(self.pause_on_lock_var.get())
+        self.cfg.pause_on_lock = enabled
+        save_config(self.cfg)
+        self._sync_pause_on_lock_watcher()
+        self._append_log(
+            "Pause when locked: on." if enabled else "Pause when locked: off."
+        )
+
+    def _sync_pause_on_lock_watcher(self) -> None:
+        from link_bridge.session_lock import (
+            LockPauseController,
+            SessionLockWatcher,
+            is_session_locked,
+        )
+
+        enabled = bool(self.cfg.pause_on_lock)
+        if not enabled:
+            if self._lock_watcher is not None:
+                self._lock_watcher.stop()
+                self._lock_watcher = None
+            if self._lock_ctrl is not None and self._lock_ctrl.auto_paused:
+                self._lock_ctrl.auto_paused = False
+                self.paused_var.set(False)
+                self.cfg.paused = False
+                save_config(self.cfg)
+                self._apply_paused_to_client(False)
+                self._append_log("Resumed (pause-when-locked turned off).")
+            self._lock_ctrl = None
+            return
+
+        if self._lock_ctrl is None:
+            self._lock_ctrl = LockPauseController()
+        if self._lock_watcher is None or not self._lock_watcher.running:
+            if self._lock_watcher is not None:
+                self._lock_watcher.stop()
+            self._lock_watcher = SessionLockWatcher(
+                on_lock=lambda: self._ui(self._on_session_locked),
+                on_unlock=lambda: self._ui(self._on_session_unlocked),
+            )
+            if not self._lock_watcher.start():
+                self._append_log("Pause when locked unavailable on this OS.")
+                self.pause_on_lock_var.set(False)
+                self.cfg.pause_on_lock = False
+                save_config(self.cfg)
+                self._lock_watcher = None
+                return
+        if is_session_locked():
+            # Already locked at enable/start: claim current pause as lock-owned
+            # so unlock will resume, or pause now if still running.
+            if bool(self.paused_var.get()):
+                self._lock_ctrl.auto_paused = True
+            else:
+                self._on_session_locked()
+
+    def _on_session_locked(self) -> None:
+        if self._lock_ctrl is None or not self.cfg.pause_on_lock:
+            return
+        desired = self._lock_ctrl.on_lock(bool(self.paused_var.get()))
+        if desired is None:
+            return
+        self.paused_var.set(desired)
+        self.cfg.paused = desired
+        save_config(self.cfg)
+        self._apply_paused_to_client(desired)
+        self._append_log("Paused (PC locked).")
+
+    def _on_session_unlocked(self) -> None:
+        if self._lock_ctrl is None or not self.cfg.pause_on_lock:
+            return
+        desired = self._lock_ctrl.on_unlock()
+        if desired is None:
+            return
+        self.paused_var.set(desired)
+        self.cfg.paused = desired
+        save_config(self.cfg)
+        self._apply_paused_to_client(desired)
+        self._append_log("Resumed (PC unlocked).")
 
     def _on_start_hidden_toggle(self) -> None:
         self.cfg.start_hidden = bool(self.hidden_var.get())
@@ -556,6 +654,12 @@ class LinkBridgeApp(tk.Tk):
             return
         self._quitting = True
         self._pair_stop.set()
+        if self._lock_watcher is not None:
+            try:
+                self._lock_watcher.stop()
+            except Exception:
+                pass
+            self._lock_watcher = None
         self.stop_bridge()
         if self._tray is not None:
             try:
