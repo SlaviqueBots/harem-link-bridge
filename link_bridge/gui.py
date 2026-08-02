@@ -440,7 +440,6 @@ class LinkBridgeApp(tk.Tk):
         from link_bridge.session_lock import (
             LockPauseController,
             SessionLockWatcher,
-            is_session_locked,
         )
 
         enabled = bool(self.cfg.pause_on_lock)
@@ -474,13 +473,8 @@ class LinkBridgeApp(tk.Tk):
                 save_config(self.cfg)
                 self._lock_watcher = None
                 return
-        if is_session_locked():
-            # Already locked at enable/start: claim current pause as lock-owned
-            # so unlock will resume, or pause now if still running.
-            if bool(self.paused_var.get()):
-                self._lock_ctrl.auto_paused = True
-            else:
-                self._on_session_locked()
+        # Do not probe OpenInputDesktop here — it false-positives and sticky-pauses.
+        # Only WTS lock/unlock notifications drive auto-pause.
 
     def _on_session_locked(self) -> None:
         if self._lock_ctrl is None or not self.cfg.pause_on_lock:

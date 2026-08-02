@@ -92,8 +92,8 @@ class BridgeClient:
             msg = json.loads(raw)
             if msg.get("op") != "hello_ok":
                 raise RuntimeError(f"hello rejected: {msg!r}")
-            if self._paused:
-                await ws.send(json.dumps({"op": "pause"}))
+            # Always sync pause state after hello (clears sticky server pause).
+            await ws.send(json.dumps({"op": "pause" if self._paused else "resume"}))
             self.on_status(
                 "Connected." + (" (paused)" if self._paused else "")
             )

@@ -42,15 +42,39 @@ def main(argv: list[str] | None = None) -> int:
     )
     _ensure_path()
     _load_dotenv_quiet()
-    try:
-        from link_bridge.sync_config import sync_config
+    # Never rewrite adopter config on frozen launches (owner bootstrap only).
+    if not getattr(sys, "frozen", False):
+        try:
+            from link_bridge.sync_config import sync_config
 
-        sync_config()
-    except Exception:
-        logging.getLogger(__name__).debug("sync_config skipped", exc_info=True)
+            sync_config()
+        except Exception:
+            logging.getLogger(__name__).debug("sync_config skipped", exc_info=True)
 
     if args.cli:
         return _run_cli()
+
+    if sys.platform == "win32":
+        from link_bridge.singleton import acquire_singleton
+
+        if not acquire_singleton():
+            logging.getLogger(__name__).error(
+                "Harem Link Bridge is already running — exit the tray copy first."
+            )
+            try:
+                import ctypes
+
+                ctypes.windll.user32.MessageBoxW(
+                    0,
+                    "Harem Link Bridge is already running (check the tray).\n\n"
+                    "Exit the existing copy before starting another.",
+                    "Harem Link Bridge",
+                    0x00000030,
+                )
+            except Exception:
+                pass
+            return 1
+
     from link_bridge.gui import main as gui_main
 
     gui_main()
