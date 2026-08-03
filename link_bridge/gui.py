@@ -22,11 +22,14 @@ class LinkBridgeApp(tk.Tk):
     def __init__(self, cfg: BridgeConfig | None = None) -> None:
         super().__init__()
         self.title(f"Harem Link Bridge  v{__version__}")
-        self.minsize(560, 500)
-        self.geometry("640x560")
+        self.minsize(720, 560)
+        from link_bridge.roster import DEFAULT_GEOMETRY
 
         self.cfg = cfg or load_config()
         self.cfg.ensure_device_id()
+        saved = (self.cfg.window_geometry or "").strip()
+        self.geometry(saved if saved else DEFAULT_GEOMETRY)
+
         self._client: BridgeClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -35,6 +38,8 @@ class LinkBridgeApp(tk.Tk):
         self._pair_stop = threading.Event()
         self._lock_ctrl = None
         self._lock_watcher = None
+        self._roster = None
+        self._sets = None
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
@@ -50,9 +55,40 @@ class LinkBridgeApp(tk.Tk):
 
     def _build(self) -> None:
         pad = {"padx": 10, "pady": 6}
-        root = ttk.Frame(self, padding=12)
+        root = ttk.Frame(self, padding=8)
         root.pack(fill=tk.BOTH, expand=True)
 
+        self._main_nb = ttk.Notebook(root)
+        self._main_nb.pack(fill=tk.BOTH, expand=True)
+        roster_tab = ttk.Frame(self._main_nb, padding=4)
+        setup_tab = ttk.Frame(self._main_nb, padding=8)
+        self._main_nb.add(roster_tab, text="Roster")
+        self._main_nb.add(setup_tab, text="Setup")
+
+        status_row = ttk.Frame(roster_tab)
+        status_row.pack(fill=tk.X, pady=(0, 4))
+        self.status_var = tk.StringVar(value=self._idle_status_text())
+        ttk.Label(status_row, textvariable=self.status_var, wraplength=640).pack(
+            side=tk.LEFT, fill=tk.X, expand=True
+        )
+
+        from link_bridge.roster import RosterPanel
+
+        self._roster = RosterPanel(
+            roster_tab,
+            fetch_page=self._roster_fetch_page,
+            open_omni=self._roster_open_omni,
+            post_grid=self._roster_post_grid,
+            list_sets=self._sets_list,
+            should_focus_telegram=lambda: bool(self.cfg.focus_telegram),
+            on_log=self._append_log,
+        )
+        self._roster.pack(fill=tk.BOTH, expand=True)
+        self._sets = None
+
+        self._build_setup_tab(setup_tab, pad)
+
+    def _build_setup_tab(self, root: ttk.Frame, pad: dict) -> None:
         steps = ttk.LabelFrame(root, text="Setup (once)", padding=8)
         steps.pack(fill=tk.X, **pad)
         ttk.Label(
@@ -122,6 +158,26 @@ class LinkBridgeApp(tk.Tk):
             variable=self.hidden_var,
             command=self._on_start_hidden_toggle,
         ).pack(side=tk.LEFT, padx=(12, 0))
+        opts4 = ttk.Frame(root)
+        opts4.pack(fill=tk.X, **pad)
+        self.focus_tg_var = tk.BooleanVar(value=self.cfg.focus_telegram)
+        ttk.Checkbutton(
+            opts4,
+            text="Focus Telegram after open",
+            variable=self.focus_tg_var,
+            command=self._on_focus_tg_toggle,
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(
+            root,
+            text=(
+                "Roster clicks: Left = open omnicraft in Telegram DM · "
+                "Right = open the post in your browser\n"
+                "Sets clicks: Left = post the card into the main group · "
+                "Right = open the post in your browser"
+            ),
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(10, 0))
 
         btn_row = ttk.Frame(root)
         btn_row.pack(fill=tk.X, **pad)
@@ -150,14 +206,8 @@ class LinkBridgeApp(tk.Tk):
         self.port_var = tk.StringVar(value=str(self.cfg.port))
         ttk.Entry(adv, textvariable=self.port_var).pack(fill=tk.X)
 
-        ttk.Label(root, text="Status").pack(anchor=tk.W)
-        self.status_var = tk.StringVar(value=self._idle_status_text())
-        ttk.Label(root, textvariable=self.status_var, wraplength=600).pack(
-            anchor=tk.W, fill=tk.X
-        )
-
         ttk.Label(root, text="Log").pack(anchor=tk.W, pady=(10, 0))
-        self.log = tk.Text(root, height=10, wrap=tk.WORD, font=("Consolas", 10))
+        self.log = tk.Text(root, height=8, wrap=tk.WORD, font=("Consolas", 10))
         self.log.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         self.log.configure(state=tk.DISABLED)
 
@@ -218,8 +268,16 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.open_browser = bool(self.open_var.get())
         self.cfg.start_hidden = bool(self.hidden_var.get())
         self.cfg.autostart = bool(self.autostart_var.get())
+        self.cfg.focus_telegram = bool(self.focus_tg_var.get())
         self.cfg.ensure_device_id()
         return True
+
+    def _on_focus_tg_toggle(self) -> None:
+        self.cfg.focus_telegram = bool(self.focus_tg_var.get())
+        save_config(self.cfg)
+        self._append_log(
+            "Focus Telegram: on." if self.cfg.focus_telegram else "Focus Telegram: off."
+        )
 
     def save_settings(self) -> None:
         if not self._read_form_into_cfg():
@@ -375,7 +433,13 @@ class LinkBridgeApp(tk.Tk):
         self._loop = loop
 
         def on_status(msg: str) -> None:
-            self._ui(lambda: (self.status_var.set(msg), self._append_log(msg)))
+            def _apply() -> None:
+                self.status_var.set(msg)
+                self._append_log(msg)
+                if msg.startswith("Connected") and self._roster is not None:
+                    self._roster.load_page(0)
+
+            self._ui(_apply)
 
         def on_open(url: str) -> None:
             self._ui(lambda: self._handle_open(url))
@@ -395,8 +459,72 @@ class LinkBridgeApp(tk.Tk):
                 lambda: (
                     self.connect_btn.configure(state=tk.NORMAL),
                     self.disconnect_btn.configure(state=tk.DISABLED),
+                    self._roster.clear() if self._roster else None,
                 )
             )
+
+    def _schedule_coro(self, coro_factory, on_ok, on_err) -> None:
+        client = self._client
+        loop = self._loop
+        if client is None or loop is None or not loop.is_running():
+            on_err(RuntimeError("not connected"))
+            return
+
+        def _go() -> None:
+            async def _run() -> None:
+                try:
+                    result = await coro_factory(client)
+                except Exception as exc:
+                    self._ui(lambda: on_err(exc))
+                    return
+                self._ui(lambda: on_ok(result))
+
+            asyncio.create_task(_run())
+
+        loop.call_soon_threadsafe(_go)
+
+    def _roster_fetch_page(
+        self, page: int, q: str, done: int, set_name: str, on_ok, on_err
+    ) -> None:
+        from link_bridge.roster import PAGE_SIZE
+
+        query = (q or "").strip()
+        done_flag = int(done)
+        set_n = (set_name or "").strip()
+        self._schedule_coro(
+            lambda c: c.request_roster_page(
+                page, PAGE_SIZE, q=query, done=done_flag, set_name=set_n
+            ),
+            on_ok,
+            on_err,
+        )
+
+    def _sets_list(self, on_ok, on_err) -> None:
+        self._schedule_coro(lambda c: c.request_sets_list(), on_ok, on_err)
+
+    def _roster_open_omni(self, char_id: int, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_open_omni(char_id),
+            on_ok,
+            on_err,
+        )
+
+    def _roster_post_grid(self, char_id: int, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_post_grid(char_id),
+            on_ok,
+            on_err,
+        )
+
+    def _persist_window_geometry(self) -> None:
+        try:
+            geo = self.geometry()
+        except Exception:
+            return
+        if not geo or geo == self.cfg.window_geometry:
+            return
+        self.cfg.window_geometry = geo
+        save_config(self.cfg)
 
     def _handle_open(self, url: str) -> None:
         self._append_log(f"Open: {url}")
@@ -637,6 +765,7 @@ class LinkBridgeApp(tk.Tk):
         self._on_pause_toggle()
 
     def _on_close_to_tray(self) -> None:
+        self._persist_window_geometry()
         if self._tray is not None:
             self.withdraw()
             self.status_var.set("Hidden in tray.")
@@ -647,6 +776,7 @@ class LinkBridgeApp(tk.Tk):
         if self._quitting:
             return
         self._quitting = True
+        self._persist_window_geometry()
         self._pair_stop.set()
         if self._lock_watcher is not None:
             try:

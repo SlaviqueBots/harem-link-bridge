@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 StatusCb = Callable[[str], None]
 OpenCb = Callable[[str], None]
+JsonCb = Callable[[dict[str, Any]], None]
 
 
 class BridgeClient:
@@ -25,18 +26,26 @@ class BridgeClient:
         *,
         on_status: StatusCb | None = None,
         on_open_url: OpenCb | None = None,
+        on_message: JsonCb | None = None,
     ) -> None:
         self.cfg = cfg
         self.on_status = on_status or (lambda _s: None)
         self.on_open_url = on_open_url or (lambda _u: None)
+        self.on_message = on_message or (lambda _m: None)
         self._ws: Any = None
         self._stop = asyncio.Event()
         self._paused = bool(cfg.paused)
         self._task: asyncio.Task | None = None
+        self._pending: dict[str, asyncio.Future] = {}
+        self.bot_username: str = ""
 
     @property
     def paused(self) -> bool:
         return self._paused
+
+    @property
+    def connected(self) -> bool:
+        return self._ws is not None
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -92,6 +101,7 @@ class BridgeClient:
             msg = json.loads(raw)
             if msg.get("op") != "hello_ok":
                 raise RuntimeError(f"hello rejected: {msg!r}")
+            self.bot_username = str(msg.get("bot_username") or "").lstrip("@")
             # Always sync pause state after hello (clears sticky server pause).
             await ws.send(json.dumps({"op": "pause" if self._paused else "resume"}))
             self.on_status(
@@ -102,6 +112,7 @@ class BridgeClient:
                     break
                 await self._handle(message)
         self._ws = None
+        self._fail_pending("disconnected")
 
     def _hello_payload(self) -> dict:
         if self.cfg.is_paired():
@@ -116,6 +127,13 @@ class BridgeClient:
             "user_id": int(self.cfg.user_id),
         }
 
+    def _fail_pending(self, reason: str) -> None:
+        pending = list(self._pending.items())
+        self._pending.clear()
+        for _key, fut in pending:
+            if not fut.done():
+                fut.set_exception(RuntimeError(reason))
+
     async def _handle(self, message: str | bytes) -> None:
         try:
             body = json.loads(message)
@@ -128,6 +146,97 @@ class BridgeClient:
                 self.on_open_url(url)
         elif op == "pong":
             pass
+        elif op in (
+            "roster_page_ok",
+            "roster_page_err",
+            "open_omni_ok",
+            "open_omni_err",
+            "post_grid_ok",
+            "post_grid_err",
+            "sets_list_ok",
+            "sets_list_err",
+        ):
+            if op.startswith("roster_page"):
+                key = "roster_page"
+            elif op.startswith("open_omni"):
+                key = "open_omni"
+            elif op.startswith("post_grid"):
+                key = "post_grid"
+            else:
+                key = "sets_list"
+            fut = self._pending.pop(key, None)
+            if fut is not None and not fut.done():
+                fut.set_result(body)
+            self.on_message(body)
+        else:
+            self.on_message(body)
+
+    async def request_roster_page(
+        self,
+        page: int = 0,
+        page_size: int = 24,
+        *,
+        q: str = "",
+        done: int = 0,
+        set_name: str = "",
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "roster_page",
+            {
+                "op": "roster_page",
+                "page": int(page),
+                "page_size": int(page_size),
+                "q": (q or "").strip(),
+                "done": int(done),
+                "set": (set_name or "").strip(),
+            },
+            timeout=timeout,
+        )
+
+    async def request_sets_list(self, *, timeout: float = 20.0) -> dict[str, Any]:
+        return await self._request(
+            "sets_list",
+            {"op": "sets_list"},
+            timeout=timeout,
+        )
+
+    async def request_open_omni(
+        self, char_id: int, *, timeout: float = 45.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "open_omni",
+            {"op": "open_omni", "char_id": int(char_id)},
+            timeout=timeout,
+        )
+
+    async def request_post_grid(
+        self, char_id: int, *, timeout: float = 45.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "post_grid",
+            {"op": "post_grid", "char_id": int(char_id)},
+            timeout=timeout,
+        )
+
+    async def _request(
+        self, key: str, payload: dict, *, timeout: float
+    ) -> dict[str, Any]:
+        ws = self._ws
+        if ws is None:
+            raise RuntimeError("not connected")
+        old = self._pending.pop(key, None)
+        if old is not None and not old.done():
+            old.set_exception(RuntimeError("superseded"))
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._pending[key] = fut
+        await ws.send(json.dumps(payload))
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except Exception:
+            self._pending.pop(key, None)
+            raise
 
     async def pair_begin(self) -> dict:
         """Open a short-lived WS, request a pairing code + deep link."""

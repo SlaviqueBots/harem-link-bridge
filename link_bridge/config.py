@@ -31,7 +31,7 @@ class BridgeConfig:
     device_token: str = ""
     paused: bool = False
     # When True, pause while Windows is locked (Win+L) and resume on unlock.
-    pause_on_lock: bool = False
+    pause_on_lock: bool = True
     start_hidden: bool = False
     open_browser: bool = True
     autostart: bool = False
@@ -39,6 +39,10 @@ class BridgeConfig:
     check_updates: bool = True
     update_port: int = 8766
     update_url: str = ""  # optional full URL to version.json
+    # After opening omnicraft in DM, try to raise Telegram.exe (no deep links).
+    focus_telegram: bool = True
+    # Last window geometry, e.g. "900x760+120+80". Empty = use DEFAULT_GEOMETRY.
+    window_geometry: str = ""
 
     def ws_url(self) -> str:
         host = (self.host or "").strip() or "127.0.0.1"
@@ -87,13 +91,15 @@ def load_config() -> BridgeConfig:
         device_id=str(raw.get("device_id") or ""),
         device_token=str(raw.get("device_token") or ""),
         paused=bool(raw.get("paused", False)),
-        pause_on_lock=bool(raw.get("pause_on_lock", False)),
+        pause_on_lock=bool(raw.get("pause_on_lock", True)),
         start_hidden=bool(raw.get("start_hidden", False)),
         open_browser=bool(raw.get("open_browser", True)),
         autostart=bool(raw.get("autostart", False)),
         check_updates=bool(raw.get("check_updates", True)),
         update_port=int(raw.get("update_port") or BridgeConfig.update_port),
         update_url=str(raw.get("update_url") or ""),
+        focus_telegram=bool(raw.get("focus_telegram", True)),
+        window_geometry=str(raw.get("window_geometry") or ""),
     )
     cfg.ensure_device_id()
     return cfg
