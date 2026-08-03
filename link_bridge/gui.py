@@ -171,9 +171,9 @@ class LinkBridgeApp(tk.Tk):
         ttk.Label(
             root,
             text=(
-                "Roster clicks: Left = open omnicraft in Telegram DM · "
+                "Undone clicks: Left = open omnicraft in Telegram DM · "
                 "Right = open the post in your browser\n"
-                "Sets clicks: Left = post the card into the main group · "
+                "Done / Sets clicks: Left = post the card into the main group · "
                 "Right = open the post in your browser"
             ),
             justify=tk.LEFT,

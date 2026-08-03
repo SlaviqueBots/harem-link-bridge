@@ -336,7 +336,7 @@ class RosterPanel(ttk.Frame):
             ttk.Label(cell, text=name, wraplength=max(60, thumb)).pack()
             cid = int(item.get("id") or 0)
             post_url = (item.get("post_url") or "").strip()
-            thumb_lbl.bind("<Button-1>", lambda _e, x=cid: self._click_omni(x))
+            thumb_lbl.bind("<Button-1>", lambda _e, x=cid: self._click_primary(x))
             thumb_lbl.bind("<Button-3>", lambda _e, u=post_url: self._open_post(u))
             url = (item.get("preview_url") or "").strip()
             if url:
@@ -385,7 +385,7 @@ class RosterPanel(ttk.Frame):
                 photo = ImageTk.PhotoImage(im)
                 self._photos.append(photo)
                 label.configure(image=photo, text="")
-                label.bind("<Button-1>", lambda _e, x=char_id: self._click_omni(x))
+                label.bind("<Button-1>", lambda _e, x=char_id: self._click_primary(x))
                 label.bind("<Button-3>", lambda _e, u=post_url: self._open_post(u))
             except Exception as exc:
                 logger.debug("thumb decode failed: %s", exc)
@@ -414,6 +414,45 @@ class RosterPanel(ttk.Frame):
                 label.after(0, fail)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _click_primary(self, char_id: int) -> None:
+        # Done tab posts into the main group (same as Sets). Undone keeps omni.
+        if self._mode == "done" and self._post_grid is not None:
+            self._click_post(char_id)
+            return
+        self._click_omni(char_id)
+
+    def _click_post(self, char_id: int) -> None:
+        if char_id <= 0 or self._busy or self._post_grid is None:
+            return
+        self._busy = True
+        self.meta_var.set(f"Posting #{char_id} to main group…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "post_grid_ok":
+                self.meta_var.set(f"Posted #{char_id} → main group")
+                self._on_log(f"Grid post sent for char {char_id}")
+                if self._should_focus():
+                    try:
+                        from link_bridge.focus_telegram import focus_telegram
+
+                        if focus_telegram():
+                            self._on_log("Focused Telegram window")
+                        else:
+                            self._on_log("Telegram window not found")
+                    except Exception:
+                        logger.debug("focus telegram failed", exc_info=True)
+            else:
+                self.meta_var.set(f"Post failed: {body.get('error') or 'failed'}")
+            self._set_nav(True)
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Post failed: {exc}")
+            self._set_nav(True)
+
+        self._post_grid(int(char_id), on_ok, on_err)
 
     def _click_omni(self, char_id: int) -> None:
         if char_id <= 0 or self._busy:
