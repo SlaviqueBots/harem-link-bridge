@@ -171,10 +171,11 @@ class LinkBridgeApp(tk.Tk):
         ttk.Label(
             root,
             text=(
-                "Undone clicks: Left = open omnicraft in Telegram DM · "
+                "Clicks: Left = post to main group (Done / Sets / @user / all) "
+                "or open omnicraft (Undone own) · "
+                "Middle = open in your Telegram DM · "
                 "Right = open the post in your browser\n"
-                "Done / Sets clicks: Left = post the card into the main group · "
-                "Right = open the post in your browser"
+                "Search: name filter · @username [name] · all [name] (2+ letters)"
             ),
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(10, 0))

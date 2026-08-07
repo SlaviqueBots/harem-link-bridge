@@ -29,6 +29,7 @@ ErrCb = Callable[[BaseException], None]
 ListSetsFn = Callable[[OkCb, ErrCb], None]
 FetchPageFn = Callable[[int, str, int, str, OkCb, ErrCb], None]
 PostGridFn = Callable[[int, OkCb, ErrCb], None]
+OpenOmniFn = Callable[[int, OkCb, ErrCb], None]
 FocusPrefFn = Callable[[], bool]
 
 
@@ -42,6 +43,7 @@ class SetsPanel(ttk.Frame):
         list_sets: ListSetsFn,
         fetch_page: FetchPageFn,
         post_grid: PostGridFn,
+        open_omni: OpenOmniFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
         on_log: Callable[[str], None] | None = None,
     ) -> None:
@@ -49,6 +51,7 @@ class SetsPanel(ttk.Frame):
         self._list_sets = list_sets
         self._fetch_page = fetch_page
         self._post_grid = post_grid
+        self._open_omni = open_omni
         self._should_focus = should_focus_telegram or (lambda: False)
         self._on_log = on_log or (lambda _s: None)
         self._selected = ""
@@ -266,8 +269,7 @@ class SetsPanel(ttk.Frame):
             ttk.Label(cell, text=name, wraplength=max(60, thumb)).pack()
             cid = int(item.get("id") or 0)
             post_url = (item.get("post_url") or "").strip()
-            thumb_lbl.bind("<Button-1>", lambda _e, x=cid: self._click_post(x))
-            thumb_lbl.bind("<Button-3>", lambda _e, u=post_url: self._open_post(u))
+            self._bind_thumb(thumb_lbl, cid, post_url)
             url = (item.get("preview_url") or "").strip()
             if url:
                 self._load_thumb(
@@ -315,8 +317,7 @@ class SetsPanel(ttk.Frame):
                 photo = ImageTk.PhotoImage(im)
                 self._photos.append(photo)
                 label.configure(image=photo, text="")
-                label.bind("<Button-1>", lambda _e, x=char_id: self._click_post(x))
-                label.bind("<Button-3>", lambda _e, u=post_url: self._open_post(u))
+                self._bind_thumb(label, char_id, post_url)
             except Exception:
                 label.configure(text="no preview")
 
@@ -341,6 +342,11 @@ class SetsPanel(ttk.Frame):
                 )
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _bind_thumb(self, label: tk.Label, char_id: int, post_url: str) -> None:
+        label.bind("<Button-1>", lambda _e, x=char_id: self._click_post(x))
+        label.bind("<Button-2>", lambda _e, x=char_id: self._click_omni(x))
+        label.bind("<Button-3>", lambda _e, u=post_url: self._open_post(u))
 
     def _click_post(self, char_id: int) -> None:
         if char_id <= 0 or self._busy:
@@ -370,3 +376,32 @@ class SetsPanel(ttk.Frame):
             self._set_nav(True)
 
         self._post_grid(int(char_id), on_ok, on_err)
+
+    def _click_omni(self, char_id: int) -> None:
+        if char_id <= 0 or self._busy or self._open_omni is None:
+            return
+        self._busy = True
+        self.meta_var.set(f"Opening #{char_id} in Telegram DM…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "open_omni_ok":
+                self.meta_var.set(f"Sent #{char_id} → Telegram DM")
+                self._on_log(f"Omnicraft sent for char {char_id}")
+                if self._should_focus():
+                    try:
+                        from link_bridge.focus_telegram import focus_telegram
+
+                        focus_telegram()
+                    except Exception:
+                        pass
+            else:
+                self.meta_var.set(f"Open failed: {body.get('error') or 'failed'}")
+            self._set_nav(True)
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Open failed: {exc}")
+            self._set_nav(True)
+
+        self._open_omni(int(char_id), on_ok, on_err)

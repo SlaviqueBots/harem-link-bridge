@@ -65,6 +65,7 @@ class RosterPanel(ttk.Frame):
         self._query = ""
         self._done = 0
         self._mode = "undone"  # undone | done | sets
+        self._scope = "own"  # own | user | all (from server)
         self._items: list[dict[str, Any]] = []
         self._photos: list[Any] = []
         self._img_bytes: dict[str, bytes] = {}
@@ -101,6 +102,7 @@ class RosterPanel(ttk.Frame):
                 list_sets=list_sets,
                 fetch_page=fetch_page,
                 post_grid=post_grid,
+                open_omni=open_omni,
                 should_focus_telegram=should_focus_telegram,
                 on_log=on_log,
             )
@@ -278,11 +280,17 @@ class RosterPanel(ttk.Frame):
             self._page = int(body.get("page") or 0)
             self._page_size = int(body.get("page_size") or PAGE_SIZE)
             self._total = int(body.get("total") or 0)
+            self._scope = str(body.get("scope") or "own")
             self._items = list(body.get("items") or [])
             pages = max(1, (self._total + self._page_size - 1) // self._page_size)
             q_bit = f" · “{q}”" if q else ""
+            scope_bit = ""
+            if self._scope == "all":
+                scope_bit = " · all"
+            elif self._scope == "user":
+                scope_bit = " · @"
             self.meta_var.set(
-                f"{kind.capitalize()} · page {self._page + 1}/{pages} · "
+                f"{kind.capitalize()}{scope_bit} · page {self._page + 1}/{pages} · "
                 f"{self._total} cards{q_bit}"
             )
             self._thumb = compute_thumb(
@@ -307,6 +315,7 @@ class RosterPanel(ttk.Frame):
         self._items = []
         self._total = 0
         self._page = 0
+        self._scope = "own"
         self._busy = False
         self._img_bytes.clear()
         self.meta_var.set("Connect to load roster.")
@@ -333,11 +342,12 @@ class RosterPanel(ttk.Frame):
             thumb_lbl = tk.Label(box, text="…", relief=tk.GROOVE, cursor="hand2")
             thumb_lbl.pack(fill=tk.BOTH, expand=True)
             name = (item.get("name") or f"#{item.get('id')}")[:22]
-            ttk.Label(cell, text=name, wraplength=max(60, thumb)).pack()
+            owner = (item.get("owner") or "").strip()
+            label_txt = f"{name}\n{owner}" if owner else name
+            ttk.Label(cell, text=label_txt, wraplength=max(60, thumb), justify=tk.CENTER).pack()
             cid = int(item.get("id") or 0)
             post_url = (item.get("post_url") or "").strip()
-            thumb_lbl.bind("<Button-1>", lambda _e, x=cid: self._click_primary(x))
-            thumb_lbl.bind("<Button-3>", lambda _e, u=post_url: self._open_post(u))
+            self._bind_thumb(thumb_lbl, cid, post_url)
             url = (item.get("preview_url") or "").strip()
             if url:
                 self._load_thumb(
@@ -385,8 +395,7 @@ class RosterPanel(ttk.Frame):
                 photo = ImageTk.PhotoImage(im)
                 self._photos.append(photo)
                 label.configure(image=photo, text="")
-                label.bind("<Button-1>", lambda _e, x=char_id: self._click_primary(x))
-                label.bind("<Button-3>", lambda _e, u=post_url: self._open_post(u))
+                self._bind_thumb(label, char_id, post_url)
             except Exception as exc:
                 logger.debug("thumb decode failed: %s", exc)
                 label.configure(text="no preview")
@@ -415,9 +424,15 @@ class RosterPanel(ttk.Frame):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _bind_thumb(self, label: tk.Label, char_id: int, post_url: str) -> None:
+        label.bind("<Button-1>", lambda _e, x=char_id: self._click_primary(x))
+        label.bind("<Button-2>", lambda _e, x=char_id: self._click_omni(x))
+        label.bind("<Button-3>", lambda _e, u=post_url: self._open_post(u))
+
     def _click_primary(self, char_id: int) -> None:
-        # Done tab posts into the main group (same as Sets). Undone keeps omni.
-        if self._mode == "done" and self._post_grid is not None:
+        # Done / foreign search posts into the main group. Undone own keeps omni.
+        post_mode = self._mode == "done" or self._scope in ("user", "all")
+        if post_mode and self._post_grid is not None:
             self._click_post(char_id)
             return
         self._click_omni(char_id)
