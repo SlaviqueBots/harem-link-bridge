@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import io
 import logging
-import threading
-import urllib.request
 from collections.abc import Callable
 from typing import Any
 
@@ -16,8 +13,11 @@ from link_bridge.thumb_grid import (
     COLS,
     PAGE_SIZE,
     ROWS,
-    USER_AGENT,
+    cache_get,
     compute_thumb,
+    decode_thumb,
+    release_photos,
+    schedule_thumb_fetch,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,6 @@ class SetsPanel(ttk.Frame):
         self._page_size = PAGE_SIZE
         self._items: list[dict[str, Any]] = []
         self._photos: list[Any] = []
-        self._img_bytes: dict[str, bytes] = {}
         self._thumb = 140
         self._busy = False
         self._gen = 0
@@ -139,7 +138,6 @@ class SetsPanel(ttk.Frame):
         self._names = []
         self._selected = ""
         self._list.delete(0, tk.END)
-        self._img_bytes.clear()
         self.clear_grid()
         self.meta_var.set("Pick a set on the left.")
 
@@ -150,7 +148,7 @@ class SetsPanel(ttk.Frame):
         self._page = 0
         for child in self.grid_fr.winfo_children():
             child.destroy()
-        self._photos.clear()
+        release_photos(self._photos)
         self._set_nav(False)
 
     def _on_select(self, _event=None) -> None:
@@ -254,7 +252,7 @@ class SetsPanel(ttk.Frame):
     def _render_grid(self, *, reuse_bytes: bool) -> None:
         for child in self.grid_fr.winfo_children():
             child.destroy()
-        self._photos.clear()
+        release_photos(self._photos)
         thumb = self._thumb
         for i, item in enumerate(self._items):
             r, c = divmod(i, COLS)
@@ -304,44 +302,43 @@ class SetsPanel(ttk.Frame):
         char_id: int,
         reuse_bytes: bool = False,
     ) -> None:
+        del reuse_bytes  # shared LRU always consulted
         thumb = self._thumb
 
         def apply_bytes(data: bytes) -> None:
             if gen != self._gen or not label.winfo_exists():
                 return
             try:
-                from PIL import Image, ImageOps, ImageTk
-
-                im = Image.open(io.BytesIO(data)).convert("RGB")
-                im = ImageOps.fit(im, (thumb, thumb), method=Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(im)
+                photo = decode_thumb(data, thumb)
                 self._photos.append(photo)
                 label.configure(image=photo, text="")
                 self._bind_thumb(label, char_id, post_url)
             except Exception:
                 label.configure(text="no preview")
 
-        cached = self._img_bytes.get(url)
+        cached = cache_get(url)
         if cached is not None:
             apply_bytes(cached)
             return
 
-        def worker() -> None:
+        def on_data(data: bytes) -> None:
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-                with urllib.request.urlopen(req, timeout=12) as resp:
-                    data = resp.read()
-                self._img_bytes[url] = data
-                label.after(0, lambda: apply_bytes(data))
+                label.after(0, lambda d=data: apply_bytes(d))
             except Exception:
-                label.after(
-                    0,
-                    lambda: label.configure(text="no preview")
-                    if label.winfo_exists()
-                    else None,
-                )
+                pass
 
-        threading.Thread(target=worker, daemon=True).start()
+        def on_err(_exc: BaseException) -> None:
+            def fail() -> None:
+                if gen != self._gen or not label.winfo_exists():
+                    return
+                label.configure(text="no preview")
+
+            try:
+                label.after(0, fail)
+            except Exception:
+                pass
+
+        schedule_thumb_fetch(url, on_data=on_data, on_err=on_err)
 
     def _bind_thumb(self, label: tk.Label, char_id: int, post_url: str) -> None:
         label.bind("<Button-1>", lambda _e, x=char_id: self._click_post(x))

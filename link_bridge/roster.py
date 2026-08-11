@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import io
 import logging
-import threading
-import urllib.request
 from collections.abc import Callable
 from typing import Any
 
@@ -17,8 +14,12 @@ from link_bridge.thumb_grid import (
     DEFAULT_GEOMETRY,
     PAGE_SIZE,
     ROWS,
-    USER_AGENT,
+    cache_clear,
+    cache_get,
     compute_thumb,
+    decode_thumb,
+    release_photos,
+    schedule_thumb_fetch,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,6 @@ class RosterPanel(ttk.Frame):
         self._scope = "own"  # own | user | all (from server)
         self._items: list[dict[str, Any]] = []
         self._photos: list[Any] = []
-        self._img_bytes: dict[str, bytes] = {}
         self._thumb = 140
         self._busy = False
         self._gen = 0
@@ -317,7 +317,7 @@ class RosterPanel(ttk.Frame):
         self._page = 0
         self._scope = "own"
         self._busy = False
-        self._img_bytes.clear()
+        cache_clear()
         self.meta_var.set("Connect to load roster.")
         self._clear_grid()
         self._set_nav(False)
@@ -327,7 +327,7 @@ class RosterPanel(ttk.Frame):
     def _clear_grid(self) -> None:
         for child in self.grid_fr.winfo_children():
             child.destroy()
-        self._photos.clear()
+        release_photos(self._photos)
 
     def _render_grid(self, *, reuse_bytes: bool) -> None:
         self._clear_grid()
@@ -382,17 +382,14 @@ class RosterPanel(ttk.Frame):
         char_id: int = 0,
         reuse_bytes: bool = False,
     ) -> None:
+        del reuse_bytes  # shared LRU always consulted
         thumb = self._thumb
 
         def apply_bytes(data: bytes) -> None:
             if gen != self._gen or not label.winfo_exists():
                 return
             try:
-                from PIL import Image, ImageOps, ImageTk
-
-                im = Image.open(io.BytesIO(data)).convert("RGB")
-                im = ImageOps.fit(im, (thumb, thumb), method=Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(im)
+                photo = decode_thumb(data, thumb)
                 self._photos.append(photo)
                 label.configure(image=photo, text="")
                 self._bind_thumb(label, char_id, post_url)
@@ -400,29 +397,29 @@ class RosterPanel(ttk.Frame):
                 logger.debug("thumb decode failed: %s", exc)
                 label.configure(text="no preview")
 
-        cached = self._img_bytes.get(url)
+        cached = cache_get(url)
         if cached is not None:
             apply_bytes(cached)
             return
 
-        def worker() -> None:
+        def on_data(data: bytes) -> None:
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-                with urllib.request.urlopen(req, timeout=12) as resp:
-                    data = resp.read()
-                self._img_bytes[url] = data
-                label.after(0, lambda: apply_bytes(data))
-            except Exception as exc:
-                logger.debug("thumb failed %s: %s", url[:60], exc)
+                label.after(0, lambda d=data: apply_bytes(d))
+            except Exception:
+                pass
 
-                def fail() -> None:
-                    if gen != self._gen or not label.winfo_exists():
-                        return
-                    label.configure(text="no preview")
+        def on_err(_exc: BaseException) -> None:
+            def fail() -> None:
+                if gen != self._gen or not label.winfo_exists():
+                    return
+                label.configure(text="no preview")
 
+            try:
                 label.after(0, fail)
+            except Exception:
+                pass
 
-        threading.Thread(target=worker, daemon=True).start()
+        schedule_thumb_fetch(url, on_data=on_data, on_err=on_err)
 
     def _bind_thumb(self, label: tk.Label, char_id: int, post_url: str) -> None:
         label.bind("<Button-1>", lambda _e, x=char_id: self._click_primary(x))

@@ -246,6 +246,13 @@ class LinkBridgeApp(tk.Tk):
         stamp = datetime.now().strftime("%H:%M:%S")
         self.log.configure(state=tk.NORMAL)
         self.log.insert(tk.END, f"[{stamp}] {line}\n")
+        # Cap the log so a long session does not bloat the Text widget.
+        try:
+            end_line = int(float(self.log.index("end-1c").split(".")[0]))
+            if end_line > 250:
+                self.log.delete("1.0", f"{end_line - 200}.0")
+        except Exception:
+            pass
         self.log.see(tk.END)
         self.log.configure(state=tk.DISABLED)
 
