@@ -51,6 +51,7 @@ class RosterPanel(ttk.Frame):
         post_grid: PostGridFn | None = None,
         list_sets: ListSetsFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
+        natural_thumbs: bool = False,
         on_log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
@@ -59,6 +60,7 @@ class RosterPanel(ttk.Frame):
         self._post_grid = post_grid
         self._list_sets = list_sets
         self._should_focus = should_focus_telegram or (lambda: False)
+        self._natural_thumbs = bool(natural_thumbs)
         self._on_log = on_log or (lambda _s: None)
         self._page = 0
         self._total = 0
@@ -104,11 +106,22 @@ class RosterPanel(ttk.Frame):
                 post_grid=post_grid,
                 open_omni=open_omni,
                 should_focus_telegram=should_focus_telegram,
+                natural_thumbs=self._natural_thumbs,
                 on_log=on_log,
             )
             self._sets_panel.pack(fill=tk.BOTH, expand=True)
 
         self._set_nav(False)
+
+    def set_natural_thumbs(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        if flag == self._natural_thumbs:
+            return
+        self._natural_thumbs = flag
+        if self._sets_panel is not None:
+            self._sets_panel.set_natural_thumbs(flag)
+        if self._items:
+            self._render_grid(reuse_bytes=True)
 
     def _build_roster_chrome(self, parent: ttk.Frame) -> None:
         search_row = ttk.Frame(parent)
@@ -389,7 +402,7 @@ class RosterPanel(ttk.Frame):
             if gen != self._gen or not label.winfo_exists():
                 return
             try:
-                photo = decode_thumb(data, thumb)
+                photo = decode_thumb(data, thumb, natural=self._natural_thumbs)
                 self._photos.append(photo)
                 label.configure(image=photo, text="")
                 self._bind_thumb(label, char_id, post_url)

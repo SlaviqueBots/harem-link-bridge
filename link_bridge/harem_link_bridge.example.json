@@ -12,5 +12,8 @@
   "autostart": false,
   "check_updates": true,
   "update_port": 8766,
-  "update_url": ""
+  "update_url": "",
+  "focus_telegram": true,
+  "natural_thumbs": false,
+  "window_geometry": ""
 }

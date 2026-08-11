@@ -41,6 +41,8 @@ class BridgeConfig:
     update_url: str = ""  # optional full URL to version.json
     # After opening omnicraft in DM, try to raise Telegram.exe (no deep links).
     focus_telegram: bool = True
+    # False = square crop thumbs (default). True = keep aspect inside the cell.
+    natural_thumbs: bool = False
     # Last window geometry, e.g. "900x760+120+80". Empty = use DEFAULT_GEOMETRY.
     window_geometry: str = ""
 
@@ -99,6 +101,7 @@ def load_config() -> BridgeConfig:
         update_port=int(raw.get("update_port") or BridgeConfig.update_port),
         update_url=str(raw.get("update_url") or ""),
         focus_telegram=bool(raw.get("focus_telegram", True)),
+        natural_thumbs=bool(raw.get("natural_thumbs", False)),
         window_geometry=str(raw.get("window_geometry") or ""),
     )
     cfg.ensure_device_id()

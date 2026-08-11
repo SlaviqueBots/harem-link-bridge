@@ -81,6 +81,7 @@ class LinkBridgeApp(tk.Tk):
             post_grid=self._roster_post_grid,
             list_sets=self._sets_list,
             should_focus_telegram=lambda: bool(self.cfg.focus_telegram),
+            natural_thumbs=bool(self.cfg.natural_thumbs),
             on_log=self._append_log,
         )
         self._roster.pack(fill=tk.BOTH, expand=True)
@@ -166,6 +167,15 @@ class LinkBridgeApp(tk.Tk):
             text="Focus Telegram after open",
             variable=self.focus_tg_var,
             command=self._on_focus_tg_toggle,
+        ).pack(side=tk.LEFT)
+        opts5 = ttk.Frame(root)
+        opts5.pack(fill=tk.X, **pad)
+        self.natural_thumbs_var = tk.BooleanVar(value=self.cfg.natural_thumbs)
+        ttk.Checkbutton(
+            opts5,
+            text="Natural aspect thumbs (Telegram-like; default is square crop)",
+            variable=self.natural_thumbs_var,
+            command=self._on_natural_thumbs_toggle,
         ).pack(side=tk.LEFT)
 
         ttk.Label(
@@ -277,6 +287,7 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.start_hidden = bool(self.hidden_var.get())
         self.cfg.autostart = bool(self.autostart_var.get())
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
+        self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
         self.cfg.ensure_device_id()
         return True
 
@@ -285,6 +296,19 @@ class LinkBridgeApp(tk.Tk):
         save_config(self.cfg)
         self._append_log(
             "Focus Telegram: on." if self.cfg.focus_telegram else "Focus Telegram: off."
+        )
+
+    def _on_natural_thumbs_toggle(self) -> None:
+        self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
+        save_config(self.cfg)
+        try:
+            self._roster.set_natural_thumbs(self.cfg.natural_thumbs)
+        except Exception:
+            pass
+        self._append_log(
+            "Thumbs: natural aspect."
+            if self.cfg.natural_thumbs
+            else "Thumbs: square crop."
         )
 
     def save_settings(self) -> None:

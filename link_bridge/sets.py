@@ -45,6 +45,7 @@ class SetsPanel(ttk.Frame):
         post_grid: PostGridFn,
         open_omni: OpenOmniFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
+        natural_thumbs: bool = False,
         on_log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
@@ -53,6 +54,7 @@ class SetsPanel(ttk.Frame):
         self._post_grid = post_grid
         self._open_omni = open_omni
         self._should_focus = should_focus_telegram or (lambda: False)
+        self._natural_thumbs = bool(natural_thumbs)
         self._on_log = on_log or (lambda _s: None)
         self._selected = ""
         self._page = 0
@@ -100,6 +102,14 @@ class SetsPanel(ttk.Frame):
             self.grid_fr.rowconfigure(r, weight=1, uniform="row")
         self.grid_fr.bind("<Configure>", self._on_grid_resize)
         self._set_nav(False)
+
+    def set_natural_thumbs(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        if flag == self._natural_thumbs:
+            return
+        self._natural_thumbs = flag
+        if self._items:
+            self._render_grid(reuse_bytes=True)
 
     def refresh_sets(self) -> None:
         self.meta_var.set("Loading sets…")
@@ -309,7 +319,7 @@ class SetsPanel(ttk.Frame):
             if gen != self._gen or not label.winfo_exists():
                 return
             try:
-                photo = decode_thumb(data, thumb)
+                photo = decode_thumb(data, thumb, natural=self._natural_thumbs)
                 self._photos.append(photo)
                 label.configure(image=photo, text="")
                 self._bind_thumb(label, char_id, post_url)

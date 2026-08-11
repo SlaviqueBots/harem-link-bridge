@@ -107,11 +107,20 @@ def release_photos(photos: list[Any]) -> None:
     photos.clear()
 
 
-def decode_thumb(data: bytes, size: int) -> Any:
+def decode_thumb(data: bytes, size: int, *, natural: bool = False) -> Any:
+    """Decode preview bytes into a Tk photo.
+
+    ``natural=False`` (default): center-crop to a square (current look).
+    ``natural=True``: fit inside the square box, keep aspect (Telegram-like).
+    """
     from PIL import Image, ImageOps, ImageTk
 
     im = Image.open(io.BytesIO(data)).convert("RGB")
-    im = ImageOps.fit(im, (size, size), method=Image.Resampling.LANCZOS)
+    box = (max(1, int(size)), max(1, int(size)))
+    if natural:
+        im = ImageOps.contain(im, box, method=Image.Resampling.LANCZOS)
+    else:
+        im = ImageOps.fit(im, box, method=Image.Resampling.LANCZOS)
     return ImageTk.PhotoImage(im)
 
 
