@@ -11,12 +11,28 @@ from pathlib import Path
 
 CONFIG_NAME = "harem_link_bridge.json"
 
+# Optional override used by ``python -m link_bridge --config PATH`` (local DEV runs).
+_CONFIG_PATH_OVERRIDE: Path | None = None
+
+
+def set_config_path(path: Path | None) -> None:
+    global _CONFIG_PATH_OVERRIDE
+    _CONFIG_PATH_OVERRIDE = Path(path).resolve() if path is not None else None
+
 
 def app_dir() -> Path:
     """Directory that holds the config file (next to the .exe when frozen)."""
+    if _CONFIG_PATH_OVERRIDE is not None:
+        return _CONFIG_PATH_OVERRIDE.parent
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
+
+
+def config_path() -> Path:
+    if _CONFIG_PATH_OVERRIDE is not None:
+        return _CONFIG_PATH_OVERRIDE
+    return app_dir() / CONFIG_NAME
 
 
 @dataclass
@@ -41,10 +57,16 @@ class BridgeConfig:
     update_url: str = ""  # optional full URL to version.json
     # After opening omnicraft in DM, try to raise Telegram.exe (no deep links).
     focus_telegram: bool = True
-    # False = square crop thumbs (default). True = keep aspect inside the cell.
-    natural_thumbs: bool = False
+    # True = tight justified gallery (default). False = square crop grid.
+    natural_thumbs: bool = True
+    # Gallery row height multiplier (0.5–2.0). 1.5 ≈ older larger look on big screens.
+    preview_scale: float = 1.5
+    # Middle-click post destination: "group" (main harem) or "dm".
+    middle_click_target: str = "group"
     # Last window geometry, e.g. "900x760+120+80". Empty = use DEFAULT_GEOMETRY.
     window_geometry: str = ""
+    # Tk state: "normal" or "zoomed" (Windows maximized).
+    window_state: str = "normal"
 
     def ws_url(self) -> str:
         host = (self.host or "").strip() or "127.0.0.1"
@@ -63,10 +85,6 @@ class BridgeConfig:
 
     def can_connect(self) -> bool:
         return self.is_paired() or self.can_legacy_connect()
-
-
-def config_path() -> Path:
-    return app_dir() / CONFIG_NAME
 
 
 def load_config() -> BridgeConfig:
@@ -101,11 +119,29 @@ def load_config() -> BridgeConfig:
         update_port=int(raw.get("update_port") or BridgeConfig.update_port),
         update_url=str(raw.get("update_url") or ""),
         focus_telegram=bool(raw.get("focus_telegram", True)),
-        natural_thumbs=bool(raw.get("natural_thumbs", False)),
+        natural_thumbs=bool(raw.get("natural_thumbs", True)),
+        preview_scale=_clamp_preview_scale(raw.get("preview_scale", 1.5)),
+        middle_click_target=_normalize_post_target(
+            raw.get("middle_click_target", "group")
+        ),
         window_geometry=str(raw.get("window_geometry") or ""),
+        window_state=str(raw.get("window_state") or "normal"),
     )
     cfg.ensure_device_id()
     return cfg
+
+
+def _clamp_preview_scale(raw: object) -> float:
+    try:
+        v = float(raw)
+    except Exception:
+        v = 1.5
+    return max(0.5, min(2.0, round(v, 2)))
+
+
+def _normalize_post_target(raw: object) -> str:
+    text = str(raw or "group").strip().lower()
+    return "dm" if text == "dm" else "group"
 
 
 def save_config(cfg: BridgeConfig) -> Path:

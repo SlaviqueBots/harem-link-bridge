@@ -40,9 +40,18 @@ class LinkBridgeApp(tk.Tk):
         self._lock_watcher = None
         self._roster = None
         self._sets = None
+        self._geo_save_after: str | None = None
+        self._geo_ready = False
+        self._want_zoomed = (self.cfg.window_state or "normal").strip().lower() == "zoomed"
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
+        # Windows often drops early state('zoomed') while widgets pack — restore later.
+        self.after_idle(self._restore_window_state)
+        self.after(120, self._restore_window_state)
+        self.bind("<Configure>", self._on_window_configure, add="+")
+        # Ignore Configure noise until maximize restore has a chance to stick.
+        self.after(500, self._enable_geo_persist)
         self.after(200, self._setup_tray)
         if self.cfg.start_hidden:
             self.after(300, self.withdraw)
@@ -79,9 +88,15 @@ class LinkBridgeApp(tk.Tk):
             fetch_page=self._roster_fetch_page,
             open_omni=self._roster_open_omni,
             post_grid=self._roster_post_grid,
+            register_cup=self._roster_register_cup,
+            dm_craft=self._roster_dm_craft,
             list_sets=self._sets_list,
+            fetch_tamed=self._roster_fetch_tamed,
             should_focus_telegram=lambda: bool(self.cfg.focus_telegram),
+            get_post_target=lambda: self.cfg.middle_click_target,
+            set_post_target=self._set_middle_click_target,
             natural_thumbs=bool(self.cfg.natural_thumbs),
+            preview_scale=float(self.cfg.preview_scale or 1.5),
             on_log=self._append_log,
         )
         self._roster.pack(fill=tk.BOTH, expand=True)
@@ -173,18 +188,40 @@ class LinkBridgeApp(tk.Tk):
         self.natural_thumbs_var = tk.BooleanVar(value=self.cfg.natural_thumbs)
         ttk.Checkbutton(
             opts5,
-            text="Natural aspect thumbs (Telegram-like; default is square crop)",
+            text="Tight gallery (default). Uncheck for square crop grid",
             variable=self.natural_thumbs_var,
             command=self._on_natural_thumbs_toggle,
         ).pack(side=tk.LEFT)
+        opts6 = ttk.Frame(root)
+        opts6.pack(fill=tk.X, **pad)
+        ttk.Label(opts6, text="Preview size").pack(side=tk.LEFT)
+        self.preview_scale_var = tk.DoubleVar(
+            value=float(self.cfg.preview_scale or 1.5)
+        )
+        self.preview_scale_label = tk.StringVar(
+            value=f"{int(round(float(self.cfg.preview_scale or 1.5) * 100))}%"
+        )
+        self._preview_scale_after: str | None = None
+        scale = ttk.Scale(
+            opts6,
+            from_=0.5,
+            to=2.0,
+            orient=tk.HORIZONTAL,
+            variable=self.preview_scale_var,
+            command=self._on_preview_scale_slide,
+        )
+        scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        ttk.Label(opts6, textvariable=self.preview_scale_label, width=5).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(opts6, text="(0.5×–2×)").pack(side=tk.LEFT, padx=(4, 0))
 
         ttk.Label(
             root,
             text=(
-                "Clicks: Left = post to main group (Done / Sets / @user / all) "
-                "or open omnicraft (Undone own) · "
-                "Middle = open in your Telegram DM · "
-                "Right = open the post in your browser\n"
+                "Clicks: Left = open full image · "
+                "Middle = post to main group · "
+                "Right = craft menu (Omnicraft, reshape, portal, daily cup, …)\n"
                 "Search: name filter · @username [name] · all [name] (2+ letters)"
             ),
             justify=tk.LEFT,
@@ -288,8 +325,37 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.autostart = bool(self.autostart_var.get())
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
         self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
+        from link_bridge.config import _clamp_preview_scale
+
+        self.cfg.preview_scale = _clamp_preview_scale(self.preview_scale_var.get())
         self.cfg.ensure_device_id()
         return True
+
+    def _on_preview_scale_slide(self, _value=None) -> None:
+        from link_bridge.config import _clamp_preview_scale
+
+        scale = _clamp_preview_scale(self.preview_scale_var.get())
+        self.preview_scale_label.set(f"{int(round(scale * 100))}%")
+        if self._preview_scale_after is not None:
+            try:
+                self.after_cancel(self._preview_scale_after)
+            except Exception:
+                pass
+        self._preview_scale_after = self.after(180, self._commit_preview_scale)
+
+    def _commit_preview_scale(self) -> None:
+        self._preview_scale_after = None
+        from link_bridge.config import _clamp_preview_scale
+
+        scale = _clamp_preview_scale(self.preview_scale_var.get())
+        self.preview_scale_var.set(scale)
+        self.preview_scale_label.set(f"{int(round(scale * 100))}%")
+        if abs(scale - float(self.cfg.preview_scale or 1.5)) < 0.01:
+            return
+        self.cfg.preview_scale = scale
+        save_config(self.cfg)
+        if self._roster is not None:
+            self._roster.set_preview_scale(scale)
 
     def _on_focus_tg_toggle(self) -> None:
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
@@ -531,8 +597,32 @@ class LinkBridgeApp(tk.Tk):
             on_err,
         )
 
+    def _roster_fetch_tamed(self, page: int, q: str, on_ok, on_err) -> None:
+        from link_bridge.tamed import TAMED_PAGE_SIZE
+
+        query = (q or "").strip()
+        self._schedule_coro(
+            lambda c: c.request_roster_page(
+                page, TAMED_PAGE_SIZE, q=query, done=0, kind="tamed"
+            ),
+            on_ok,
+            on_err,
+        )
+
     def _sets_list(self, on_ok, on_err) -> None:
         self._schedule_coro(lambda c: c.request_sets_list(), on_ok, on_err)
+
+    def _set_middle_click_target(self, target: str) -> None:
+        from link_bridge.config import save_config
+
+        dest = (target or "group").strip().lower()
+        self.cfg.middle_click_target = "dm" if dest == "dm" else "group"
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        if self._roster is not None and hasattr(self._roster, "sync_target_buttons"):
+            self._roster.sync_target_buttons()
 
     def _roster_open_omni(self, char_id: int, on_ok, on_err) -> None:
         self._schedule_coro(
@@ -542,21 +632,77 @@ class LinkBridgeApp(tk.Tk):
         )
 
     def _roster_post_grid(self, char_id: int, on_ok, on_err) -> None:
+        target = (self.cfg.middle_click_target or "group").strip().lower()
         self._schedule_coro(
-            lambda c: c.request_post_grid(char_id),
+            lambda c: c.request_post_grid(char_id, target=target),
             on_ok,
             on_err,
         )
 
-    def _persist_window_geometry(self) -> None:
+    def _roster_register_cup(self, char_id: int, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_register_cup(char_id),
+            on_ok,
+            on_err,
+        )
+
+    def _roster_dm_craft(self, char_id: int, craft: str, on_ok, on_err) -> None:
+        action = (craft or "omni").strip() or "omni"
+        self._schedule_coro(
+            lambda c: c.request_dm_craft(char_id, action),
+            on_ok,
+            on_err,
+        )
+
+    def _restore_window_state(self) -> None:
+        if not self._want_zoomed:
+            return
         try:
-            geo = self.geometry()
+            if str(self.state()) != "zoomed":
+                self.state("zoomed")
+        except Exception:
+            pass
+
+    def _enable_geo_persist(self) -> None:
+        self._geo_ready = True
+        self._persist_window_geometry()
+
+    def _on_window_configure(self, _event=None) -> None:
+        # Persist maximize/restore without waiting for quit (force-kill used to lose it).
+        if not self._geo_ready or self._quitting or not self.winfo_viewable():
+            return
+        if self._geo_save_after is not None:
+            try:
+                self.after_cancel(self._geo_save_after)
+            except Exception:
+                pass
+        self._geo_save_after = self.after(400, self._persist_window_geometry)
+
+    def _persist_window_geometry(self) -> None:
+        self._geo_save_after = None
+        try:
+            state = str(self.state() or "normal")
+        except Exception:
+            state = "normal"
+        # When zoomed, geometry() is often unreliable — keep last normal size.
+        try:
+            if state == "zoomed":
+                geo = (self.cfg.window_geometry or "").strip() or self.geometry()
+            else:
+                geo = self.geometry()
         except Exception:
             return
-        if not geo or geo == self.cfg.window_geometry:
-            return
-        self.cfg.window_geometry = geo
-        save_config(self.cfg)
+        changed = False
+        if geo and geo != self.cfg.window_geometry:
+            self.cfg.window_geometry = geo
+            changed = True
+        norm_state = "zoomed" if state == "zoomed" else "normal"
+        self._want_zoomed = norm_state == "zoomed"
+        if norm_state != (self.cfg.window_state or "normal"):
+            self.cfg.window_state = norm_state
+            changed = True
+        if changed:
+            save_config(self.cfg)
 
     def _handle_open(self, url: str) -> None:
         self._append_log(f"Open: {url}")
@@ -791,6 +937,7 @@ class LinkBridgeApp(tk.Tk):
         self.deiconify()
         self.lift()
         self.focus_force()
+        self.after_idle(self._restore_window_state)
 
     def _tray_toggle_pause(self) -> None:
         self.paused_var.set(not self.paused_var.get())

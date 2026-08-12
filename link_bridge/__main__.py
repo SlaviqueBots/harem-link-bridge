@@ -1,4 +1,8 @@
-"""Entry: ``python -m link_bridge`` (GUI) or ``python -m link_bridge --cli``."""
+"""Entry: ``python -m link_bridge`` (GUI) or ``python -m link_bridge --cli``.
+
+Local iteration:
+  python -m link_bridge --dev --config path\\to\\harem_link_bridge.json
+"""
 
 from __future__ import annotations
 
@@ -34,6 +38,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Headless mode (no GUI) — useful for smoke tests",
     )
+    parser.add_argument(
+        "--dev",
+        action="store_true",
+        help="Local DEV run: skip singleton + sync_config + silent auto-update",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Use this harem_link_bridge.json (instead of next-to-exe / package)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -42,8 +57,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     _ensure_path()
     _load_dotenv_quiet()
+
+    if args.config is not None:
+        from link_bridge.config import set_config_path
+
+        set_config_path(args.config)
+
     # Never rewrite adopter config on frozen launches (owner bootstrap only).
-    if not getattr(sys, "frozen", False):
+    # DEV runs also skip — keep the copied live settings intact.
+    if not getattr(sys, "frozen", False) and not args.dev:
         try:
             from link_bridge.sync_config import sync_config
 
@@ -54,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cli:
         return _run_cli()
 
-    if sys.platform == "win32":
+    if sys.platform == "win32" and not args.dev:
         from link_bridge.singleton import acquire_singleton
 
         if not acquire_singleton():
@@ -74,6 +96,18 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
             return 1
+
+    from link_bridge.config import load_config
+    from link_bridge.gui import LinkBridgeApp
+
+    cfg = load_config()
+    if args.dev:
+        cfg.check_updates = False
+        cfg.start_hidden = False
+        app = LinkBridgeApp(cfg)
+        app.title("Harem Link Bridge  DEV  (local source)")
+        app.mainloop()
+        return 0
 
     from link_bridge.gui import main as gui_main
 

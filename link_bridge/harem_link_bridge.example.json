@@ -14,6 +14,8 @@
   "update_port": 8766,
   "update_url": "",
   "focus_telegram": true,
-  "natural_thumbs": false,
-  "window_geometry": ""
+  "natural_thumbs": true,
+  "preview_scale": 1.5,
+  "window_geometry": "",
+  "window_state": "normal"
 }

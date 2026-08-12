@@ -155,6 +155,10 @@ class BridgeClient:
             "post_grid_err",
             "sets_list_ok",
             "sets_list_err",
+            "register_cup_ok",
+            "register_cup_err",
+            "dm_craft_ok",
+            "dm_craft_err",
         ):
             if op.startswith("roster_page"):
                 key = "roster_page"
@@ -162,6 +166,10 @@ class BridgeClient:
                 key = "open_omni"
             elif op.startswith("post_grid"):
                 key = "post_grid"
+            elif op.startswith("register_cup"):
+                key = "register_cup"
+            elif op.startswith("dm_craft"):
+                key = "dm_craft"
             else:
                 key = "sets_list"
             fut = self._pending.pop(key, None)
@@ -174,11 +182,12 @@ class BridgeClient:
     async def request_roster_page(
         self,
         page: int = 0,
-        page_size: int = 24,
+        page_size: int = 96,
         *,
         q: str = "",
         done: int = 0,
         set_name: str = "",
+        kind: str = "",
         timeout: float = 20.0,
     ) -> dict[str, Any]:
         return await self._request(
@@ -190,6 +199,7 @@ class BridgeClient:
                 "q": (q or "").strip(),
                 "done": int(done),
                 "set": (set_name or "").strip(),
+                "kind": (kind or "").strip(),
             },
             timeout=timeout,
         )
@@ -211,11 +221,40 @@ class BridgeClient:
         )
 
     async def request_post_grid(
-        self, char_id: int, *, timeout: float = 45.0
+        self,
+        char_id: int,
+        *,
+        target: str = "group",
+        timeout: float = 45.0,
     ) -> dict[str, Any]:
+        dest = (target or "group").strip().lower()
+        if dest not in ("dm", "group"):
+            dest = "group"
         return await self._request(
             "post_grid",
-            {"op": "post_grid", "char_id": int(char_id)},
+            {
+                "op": "post_grid",
+                "char_id": int(char_id),
+                "target": dest,
+            },
+            timeout=timeout,
+        )
+
+    async def request_register_cup(
+        self, char_id: int, *, timeout: float = 30.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "register_cup",
+            {"op": "register_cup", "char_id": int(char_id)},
+            timeout=timeout,
+        )
+
+    async def request_dm_craft(
+        self, char_id: int, craft: str, *, timeout: float = 120.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "dm_craft",
+            {"op": "dm_craft", "char_id": int(char_id), "craft": str(craft or "omni")},
             timeout=timeout,
         )
 
