@@ -896,13 +896,8 @@ class SetsPanel(ttk.Frame):
 
                     apply_silent_craft_item(self._item_by_id(char_id), action_id)
                     if str(action_id).startswith("stadd:"):
-                        new_set = str(action_id).split(":", 1)[1]
-                        self._note_set_used(new_set)
-                        if (
-                            self._selected
-                            and new_set.casefold() != self._selected.casefold()
-                        ):
-                            self.load_page(self._page)
+                        # Multi-set: adding elsewhere keeps the card in this set.
+                        self._note_set_used(str(action_id).split(":", 1)[1])
                 elif self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram

@@ -33,6 +33,7 @@ a = Analysis(
         "link_bridge.sets",
         "link_bridge.tamed",
         "link_bridge.thumb_menu",
+        "link_bridge.set_names",
         "link_bridge.text_edit_dialog",
         "link_bridge.gallery",
         "link_bridge.member_browse",

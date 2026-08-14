@@ -24,7 +24,10 @@ def apply_silent_craft_item(item: dict[str, Any] | None, action_id: str) -> None
         elif op == "ntset":
             item["note"] = raw
         elif op == "stadd":
-            item["set"] = raw
+            from link_bridge.set_names import encode_set_names, parse_set_names
+
+            existing = parse_set_names(item.get("set"))
+            item["set"] = encode_set_names([*existing, raw])
         return
     if aid == "rfl":
         item["flavour"] = ""
@@ -107,13 +110,15 @@ def popup_thumb_menu(
     menu.add_cascade(label="Note", menu=note)
 
     if can_edit_sets and (on_add_to_set is not None or on_new_set is not None):
+        from link_bridge.set_names import parse_set_names
+
         set_m = tk.Menu(menu, tearoff=0)
-        current = (current_set or "").strip()
-        cur_key = current.casefold()
+        # ``current_set`` may be multi-set encoded (unit-separator joined).
+        member_keys = {n.casefold() for n in parse_set_names(current_set)}
         names = [str(x).strip() for x in (set_names or []) if str(x).strip()]
         for sname in names:
             label = f"Add to {sname}"
-            if cur_key and sname.casefold() == cur_key:
+            if sname.casefold() in member_keys:
                 set_m.add_command(label=label, state=tk.DISABLED)
             elif on_add_to_set is not None:
                 set_m.add_command(
