@@ -39,9 +39,15 @@ PostGridFn = Callable[[int, OkCb, ErrCb], None]
 RegisterCupFn = Callable[[int, OkCb, ErrCb], None]
 DmCraftFn = Callable[[int, str, OkCb, ErrCb], None]
 FocusPrefFn = Callable[[], bool]
-ListSetsFn = Callable[[OkCb, ErrCb], None]
+ListSetsFn = Callable[[str, OkCb, ErrCb], None]
+RenameSetFn = Callable[[str, str, OkCb, ErrCb], None]
+DeleteSetFn = Callable[[str, OkCb, ErrCb], None]
 TargetGetFn = Callable[[], str]
 TargetSetFn = Callable[[str], None]
+PreferOriginalFn = Callable[[], bool]
+TextGeoGetFn = Callable[[], str]
+TextGeoSetFn = Callable[[str], None]
+BrowseUsersFn = Callable[[str, OkCb, ErrCb], None]
 FetchTamedFn = Callable[[int, str, OkCb, ErrCb], None]
 
 
@@ -69,10 +75,16 @@ class RosterPanel(ttk.Frame):
         register_cup: RegisterCupFn | None = None,
         dm_craft: DmCraftFn | None = None,
         list_sets: ListSetsFn | None = None,
+        rename_set: RenameSetFn | None = None,
+        delete_set: DeleteSetFn | None = None,
         fetch_tamed: FetchTamedFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
         get_post_target: TargetGetFn | None = None,
         set_post_target: TargetSetFn | None = None,
+        prefer_original_open: PreferOriginalFn | None = None,
+        get_text_edit_geometry: TextGeoGetFn | None = None,
+        set_text_edit_geometry: TextGeoSetFn | None = None,
+        fetch_browse_users: BrowseUsersFn | None = None,
         natural_thumbs: bool = False,
         preview_scale: float = 1.5,
         on_log: Callable[[str], None] | None = None,
@@ -84,10 +96,16 @@ class RosterPanel(ttk.Frame):
         self._register_cup = register_cup
         self._dm_craft = dm_craft
         self._list_sets = list_sets
+        self._rename_set = rename_set
+        self._delete_set = delete_set
         self._fetch_tamed = fetch_tamed
+        self._fetch_browse_users = fetch_browse_users
         self._should_focus = should_focus_telegram or (lambda: False)
         self._get_post_target = get_post_target or (lambda: "group")
         self._set_post_target = set_post_target
+        self._prefer_original = prefer_original_open or (lambda: True)
+        self._get_text_geo = get_text_edit_geometry or (lambda: "")
+        self._set_text_geo = set_text_edit_geometry
         self._natural_thumbs = bool(natural_thumbs)
         self._preview_scale = max(0.5, min(2.0, float(preview_scale or 1.5)))
         self._on_log = on_log or (lambda _s: None)
@@ -116,9 +134,13 @@ class RosterPanel(ttk.Frame):
         # Instant Done↔Undone switches: remember last roster_page bodies.
         self._page_cache: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
         self._max_page_cache = 8
+        self._set_names: list[str] = []
+        self._set_names_loaded = False
 
-        self._tab_nb = ttk.Notebook(self)
-        self._tab_nb.pack(fill=tk.X)
+        self._tab_row = ttk.Frame(self)
+        self._tab_row.pack(fill=tk.X)
+        self._tab_nb = ttk.Notebook(self._tab_row)
+        self._tab_nb.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self._tab_undone = ttk.Frame(self._tab_nb)
         self._tab_done = ttk.Frame(self._tab_nb)
         self._tab_sets = ttk.Frame(self._tab_nb)
@@ -131,6 +153,22 @@ class RosterPanel(ttk.Frame):
         self._tab_nb.configure(height=1)
         self._tab_nb.pack_propagate(False)
         self.after_idle(self._shrink_tab_bar)
+
+        self._roster_browse = None
+        if self._fetch_browse_users is not None:
+            from link_bridge.member_browse import MemberBrowsePanel
+
+            self._roster_browse = MemberBrowsePanel(
+                self._tab_row,
+                title="undone",
+                unit="undone",
+                fetch_users=lambda on_ok, on_err: self._fetch_browse_users(
+                    self._members_browse_kind(), on_ok, on_err
+                ),
+                on_pick=self._browse_pick_member,
+                on_log=self._on_log,
+            )
+            self._roster_browse.pack(side=tk.RIGHT, padx=(10, 2), pady=(1, 0))
 
         self._roster_body = ttk.Frame(self)
         self._roster_body.pack(fill=tk.BOTH, expand=True)
@@ -149,9 +187,17 @@ class RosterPanel(ttk.Frame):
                 open_omni=open_omni,
                 register_cup=register_cup,
                 dm_craft=dm_craft,
+                rename_set=rename_set,
+                delete_set=delete_set,
+                get_set_names=self._own_set_names,
+                on_set_names=self._remember_set_names,
                 should_focus_telegram=should_focus_telegram,
                 get_post_target=self._get_post_target,
                 set_post_target=self._on_target_from_child,
+                prefer_original_open=self._prefer_original,
+                get_text_edit_geometry=self._get_text_geo,
+                set_text_edit_geometry=self._set_text_geo,
+                fetch_browse_users=self._fetch_browse_users,
                 natural_thumbs=self._natural_thumbs,
                 preview_scale=self._preview_scale,
                 on_log=on_log,
@@ -173,7 +219,13 @@ class RosterPanel(ttk.Frame):
                 should_focus_telegram=should_focus_telegram,
                 get_post_target=self._get_post_target,
                 set_post_target=self._on_target_from_child,
+                prefer_original_open=self._prefer_original,
+                get_text_edit_geometry=self._get_text_geo,
+                set_text_edit_geometry=self._set_text_geo,
+                fetch_browse_users=self._fetch_browse_users,
                 preview_scale=self._preview_scale,
+                get_set_names=self._own_set_names,
+                on_set_names=self._remember_set_names,
                 on_log=on_log,
             )
             self._tamed_panel.pack(fill=tk.BOTH, expand=True)
@@ -233,6 +285,51 @@ class RosterPanel(ttk.Frame):
         ):
             self._tamed_panel.sync_target_button()
 
+    def _own_set_names(self) -> list[str]:
+        return list(self._set_names)
+
+    def _remember_set_names(self, names: list[str]) -> None:
+        self._set_names = [str(x).strip() for x in names if str(x).strip()]
+        self._set_names_loaded = True
+
+    def _note_set_used(self, name: str) -> None:
+        n = " ".join((name or "").split())
+        if not n:
+            return
+        key = n.casefold()
+        if any(x.casefold() == key for x in self._set_names):
+            return
+        self._set_names.append(n)
+
+    def _prefetch_set_names(self) -> None:
+        if self._list_sets is None or self._set_names_loaded:
+            return
+
+        def on_ok(body: dict) -> None:
+            if body.get("op") == "sets_list_ok":
+                self._remember_set_names(list(body.get("sets") or []))
+
+        self._list_sets("", on_ok, lambda _e: None)
+
+    def _add_to_set(self, char_id: int, set_name: str) -> None:
+        name = " ".join((set_name or "").split())
+        if not name:
+            return
+        self._menu_craft(char_id, f"stadd:{name}")
+
+    def _add_to_new_set(self, char_id: int) -> None:
+        from link_bridge.text_edit_dialog import ask_set_name
+
+        text = ask_set_name(
+            self,
+            title=f"New set #{char_id}",
+            geometry=self._get_text_geo(),
+            on_geometry=self._set_text_geo,
+        )
+        if text is None:
+            return
+        self._menu_craft(char_id, f"stadd:{text}")
+
     def _build_roster_chrome(self, parent: ttk.Frame) -> None:
         search_row = ttk.Frame(parent)
         search_row.pack(fill=tk.X, pady=(6, 0))
@@ -241,6 +338,7 @@ class RosterPanel(ttk.Frame):
         self.search_entry = ttk.Entry(search_row, textvariable=self.search_var)
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
         self.search_entry.bind("<Return>", lambda _e: self._search_now())
+        self._ignore_search_trace = False
         self.search_var.trace_add("write", self._on_search_typed)
         from link_bridge.theme import bind_entry_clipboard
 
@@ -275,6 +373,55 @@ class RosterPanel(ttk.Frame):
             self._pane_fr[mode] = fr
         self._pane_fr["undone"].pack(fill=tk.BOTH, expand=True)
         self.grid_fr.bind("<Configure>", self._on_grid_resize)
+
+    def _browse_pick_roster(self, username: str) -> None:
+        """Load this user's roster immediately (Search field is just a mirror)."""
+        uname = (username or "").strip().lstrip("@")
+        q = f"@{uname}" if uname else ""
+        self._ignore_search_trace = True
+        try:
+            self.search_var.set(q)
+        finally:
+            self._ignore_search_trace = False
+        self._cancel_search_timer()
+        self._query = q
+        self.load_page(0)
+
+    def _browse_pick_member(self, username: str) -> None:
+        if self._mode == "sets":
+            if self._sets_panel is not None:
+                self._sets_panel._browse_pick_user(username)
+            return
+        if self._mode == "tamed":
+            if self._tamed_panel is not None:
+                self._tamed_panel._browse_pick_user(username)
+            return
+        self._browse_pick_roster(username)
+
+    def _members_browse_kind(self) -> str:
+        if self._mode == "sets":
+            return "sets"
+        if self._mode == "tamed":
+            return "tamed"
+        return "roster_done" if self._mode == "done" else "roster_undone"
+
+    def _sync_roster_browse_labels(self) -> None:
+        panel = getattr(self, "_roster_browse", None)
+        if panel is None:
+            return
+        if self._mode == "sets":
+            panel.set_labels(title="sets", unit="sets")
+        elif self._mode == "tamed":
+            panel.set_labels(title="tamed", unit="tamed")
+        elif self._mode == "done":
+            panel.set_labels(title="done", unit="done")
+        else:
+            panel.set_labels(title="undone", unit="undone")
+        if getattr(panel, "_expanded", False):
+            panel.reload()
+        else:
+            panel.clear_cache()
+            panel.close()
 
     def _roster_mode_key(self) -> str:
         return "done" if self._mode == "done" else "undone"
@@ -336,14 +483,17 @@ class RosterPanel(ttk.Frame):
         if idx == 2:
             self._mode = "sets"
             self._show_sets_mode()
+            self._sync_roster_browse_labels()
             return
         if idx == 3:
             self._mode = "tamed"
             self._show_tamed_mode()
+            self._sync_roster_browse_labels()
             return
         self._mode = "done" if idx == 1 else "undone"
         self._done = 1 if idx == 1 else 0
         self._show_roster_mode()
+        self._sync_roster_browse_labels()
         self.load_page(0)
 
     def _on_grid_resize(self, _event=None) -> None:
@@ -377,6 +527,8 @@ class RosterPanel(ttk.Frame):
             self._search_after = None
 
     def _on_search_typed(self, *_args) -> None:
+        if getattr(self, "_ignore_search_trace", False):
+            return
         self._cancel_search_timer()
         self._search_after = self.after(SEARCH_DEBOUNCE_MS, self._search_now)
 
@@ -433,6 +585,7 @@ class RosterPanel(ttk.Frame):
         self._gen_by_mode[mode] += 1
         gen = self._gen_by_mode[mode]
         self._gen = gen
+        self._prefetch_set_names()
         q = self._query
         done = int(self._done)
         kind = "done" if done else "undone"
@@ -697,7 +850,13 @@ class RosterPanel(ttk.Frame):
             def fail() -> None:
                 if gen != self._gen or not label.winfo_exists():
                     return
-                label.configure(text="no preview")
+                label.configure(text="×")
+                label.bind(
+                    "<Button-1>",
+                    lambda _e: self._retry_square_thumb(
+                        label, url, gen, post_url=post_url, char_id=char_id
+                    ),
+                )
 
             try:
                 label.after(0, fail)
@@ -705,6 +864,22 @@ class RosterPanel(ttk.Frame):
                 pass
 
         schedule_thumb_fetch(url, on_data=on_data, on_err=on_err)
+
+    def _retry_square_thumb(
+        self,
+        label: tk.Label,
+        url: str,
+        gen: int,
+        *,
+        post_url: str = "",
+        char_id: int = 0,
+    ) -> None:
+        if gen != self._gen or not label.winfo_exists():
+            return
+        label.configure(text="…", image="")
+        self._load_thumb(
+            label, url, gen, post_url=post_url, char_id=char_id
+        )
 
     def _bind_thumb(self, label: tk.Label, char_id: int, post_url: str) -> None:
         label.bind("<Button-1>", lambda _e, x=char_id: self._click_open_image(x))
@@ -723,14 +898,35 @@ class RosterPanel(ttk.Frame):
                 continue
         return None
 
+    def _open_url_for_item(self, item: dict[str, Any], *, side: str = "") -> str:
+        prefer = bool(self._prefer_original())
+        if side == "before":
+            file_u = (item.get("before_file_url") or "").strip()
+            img_u = (item.get("before_image_url") or "").strip()
+            prev_u = (item.get("before_preview_url") or "").strip()
+        elif side == "after":
+            file_u = (item.get("after_file_url") or "").strip()
+            img_u = (
+                (item.get("after_image_url") or "").strip()
+                or (item.get("image_url") or "").strip()
+            )
+            prev_u = (
+                (item.get("after_preview_url") or "").strip()
+                or (item.get("preview_url") or "").strip()
+            )
+        else:
+            file_u = (item.get("file_url") or "").strip()
+            img_u = (item.get("image_url") or "").strip()
+            prev_u = (item.get("preview_url") or "").strip()
+        if prefer:
+            return file_u or img_u or prev_u
+        return img_u or file_u or prev_u
+
     def _click_open_image(self, char_id: int) -> None:
         from link_bridge.open_image import open_full_image
 
         item = self._item_by_id(char_id) or {}
-        url = (
-            (item.get("image_url") or "").strip()
-            or (item.get("preview_url") or "").strip()
-        )
+        url = self._open_url_for_item(item)
         if not url:
             self.meta_var.set(f"No image URL for #{char_id}")
             return
@@ -748,6 +944,11 @@ class RosterPanel(ttk.Frame):
         from link_bridge.thumb_menu import popup_thumb_menu
 
         item = self._item_by_id(char_id) or {}
+        name = str(item.get("name") or "").strip()
+        if name:
+            self.meta_var.set(f"#{char_id} · {name}")
+        else:
+            self.meta_var.set(f"#{char_id}")
         popup_thumb_menu(
             event.widget,
             event,
@@ -759,11 +960,51 @@ class RosterPanel(ttk.Frame):
             if self._register_cup is not None
             else None,
             on_show_checkpoint=self._show_checkpoint_image,
+            on_edit_flavour=self._edit_flavour,
+            on_edit_note=self._edit_note,
             can_tame=bool(item.get("can_tame")),
             is_tamed=bool(item.get("tamed")),
             has_checkpoint=bool(item.get("has_checkpoint")),
             checkpoint_image_url=str(item.get("checkpoint_image_url") or ""),
+            char_name=name,
+            set_names=self._own_set_names(),
+            current_set=str(item.get("set") or ""),
+            on_add_to_set=self._add_to_set,
+            on_new_set=self._add_to_new_set,
+            can_edit_sets=bool(item.get("mine", True)),
         )
+
+    def _edit_flavour(self, char_id: int) -> None:
+        from link_bridge.text_edit_dialog import ask_text
+
+        item = self._item_by_id(char_id) or {}
+        text = ask_text(
+            self,
+            title=f"Flavour #{char_id}",
+            initial=str(item.get("flavour") or ""),
+            prompt="Public flavour text (saved quietly — no Telegram post).",
+            geometry=self._get_text_geo(),
+            on_geometry=self._set_text_geo,
+        )
+        if text is None:
+            return
+        self._menu_craft(char_id, f"flset:{text}")
+
+    def _edit_note(self, char_id: int) -> None:
+        from link_bridge.text_edit_dialog import ask_text
+
+        item = self._item_by_id(char_id) or {}
+        text = ask_text(
+            self,
+            title=f"Note #{char_id}",
+            initial=str(item.get("note") or ""),
+            prompt="Owner-only note (saved quietly — no Telegram post).",
+            geometry=self._get_text_geo(),
+            on_geometry=self._set_text_geo,
+        )
+        if text is None:
+            return
+        self._menu_craft(char_id, f"ntset:{text}")
 
     def _show_checkpoint_image(self, url: str) -> None:
         from link_bridge.open_image import open_full_image
@@ -799,9 +1040,18 @@ class RosterPanel(ttk.Frame):
         def on_ok(body: dict) -> None:
             self._busy = False
             if body.get("op") == "dm_craft_ok":
-                self.meta_var.set(f"DM craft #{char_id}: {label} ✓")
-                self._on_log(f"DM craft {action_id} char {char_id}")
-                if self._should_focus():
+                detail = str(body.get("detail") or "ok").strip()
+                silent = bool(body.get("silent"))
+                notice = detail if detail and detail != "ok" else f"{label} ✓"
+                self.meta_var.set(f"#{char_id}: {notice}")
+                self._on_log(f"Craft {action_id} char {char_id}: {notice}")
+                if silent:
+                    from link_bridge.thumb_menu import apply_silent_craft_item
+
+                    apply_silent_craft_item(self._item_by_id(char_id), action_id)
+                    if str(action_id).startswith("stadd:"):
+                        self._note_set_used(str(action_id).split(":", 1)[1])
+                elif self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram
 
@@ -889,7 +1139,13 @@ class RosterPanel(ttk.Frame):
 
         def on_err(exc: BaseException) -> None:
             self._busy = False
-            self.meta_var.set(f"Post failed: {exc}")
+            msg = str(exc or "failed")
+            if "disconnect" in msg.lower() or "not connected" in msg.lower():
+                self.meta_var.set(
+                    f"Post failed: disconnected (close other Link Bridge copies)"
+                )
+            else:
+                self.meta_var.set(f"Post failed: {msg}")
             self._set_nav(True)
 
         self._post_grid(int(char_id), on_ok, on_err)

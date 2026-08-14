@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import time
+import urllib.error
 import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
@@ -197,10 +199,32 @@ def decode_thumb_sized(data: bytes, width: int, height: int) -> Any:
     return ImageTk.PhotoImage(im)
 
 
-def fetch_url_bytes(url: str, *, timeout: float = 12.0) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+def fetch_url_bytes(
+    url: str, *, timeout: float = 18.0, retries: int = 3
+) -> bytes:
+    """Download preview bytes; retry transient network / HTTP errors."""
+    key = (url or "").strip()
+    if not key:
+        raise ValueError("empty url")
+    last: BaseException | None = None
+    attempts = max(1, int(retries))
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(key, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+            if not data:
+                raise ValueError("empty body")
+            return data
+        except Exception as exc:
+            last = exc
+            # Don't hammer permanently-missing URLs.
+            if isinstance(exc, urllib.error.HTTPError) and exc.code in (404, 410):
+                break
+            if i + 1 < attempts:
+                time.sleep(0.35 * (i + 1))
+    assert last is not None
+    raise last
 
 
 def schedule_thumb_fetch(

@@ -40,6 +40,9 @@ class LinkBridgeApp(tk.Tk):
         self._lock_watcher = None
         self._roster = None
         self._sets = None
+        self._themes = None
+        self._themes_tab = None
+        self._themes_tab_index = None
         self._geo_save_after: str | None = None
         self._geo_ready = False
         self._want_zoomed = (self.cfg.window_state or "normal").strip().lower() == "zoomed"
@@ -91,10 +94,16 @@ class LinkBridgeApp(tk.Tk):
             register_cup=self._roster_register_cup,
             dm_craft=self._roster_dm_craft,
             list_sets=self._sets_list,
+            rename_set=self._sets_rename,
+            delete_set=self._sets_delete,
             fetch_tamed=self._roster_fetch_tamed,
             should_focus_telegram=lambda: bool(self.cfg.focus_telegram),
             get_post_target=lambda: self.cfg.middle_click_target,
             set_post_target=self._set_middle_click_target,
+            prefer_original_open=lambda: bool(self.cfg.prefer_original_open),
+            get_text_edit_geometry=lambda: str(self.cfg.text_edit_geometry or ""),
+            set_text_edit_geometry=self._save_text_edit_geometry,
+            fetch_browse_users=self._browse_users,
             natural_thumbs=bool(self.cfg.natural_thumbs),
             preview_scale=float(self.cfg.preview_scale or 1.5),
             on_log=self._append_log,
@@ -216,13 +225,26 @@ class LinkBridgeApp(tk.Tk):
         )
         ttk.Label(opts6, text="(0.5×–2×)").pack(side=tk.LEFT, padx=(4, 0))
 
+        opts7 = ttk.Frame(root)
+        opts7.pack(fill=tk.X, **pad)
+        self.prefer_original_var = tk.BooleanVar(
+            value=bool(self.cfg.prefer_original_open)
+        )
+        ttk.Checkbutton(
+            opts7,
+            text="Left-click opens original file URL (PC downloads from source)",
+            variable=self.prefer_original_var,
+            command=self._on_prefer_original_toggle,
+        ).pack(side=tk.LEFT)
+
         ttk.Label(
             root,
             text=(
                 "Clicks: Left = open full image · "
                 "Middle = post to main group · "
                 "Right = craft menu (Omnicraft, reshape, portal, daily cup, …)\n"
-                "Search: name filter · @username [name] · all [name] (2+ letters)"
+                "Search: name filter · @username [name] · all [name] (2+ letters)\n"
+                "Images are never proxied by the bot — the PC fetches URLs directly."
             ),
             justify=tk.LEFT,
         ).pack(anchor=tk.W, pady=(10, 0))
@@ -325,6 +347,7 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.autostart = bool(self.autostart_var.get())
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
         self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
+        self.cfg.prefer_original_open = bool(self.prefer_original_var.get())
         from link_bridge.config import _clamp_preview_scale
 
         self.cfg.preview_scale = _clamp_preview_scale(self.preview_scale_var.get())
@@ -376,6 +399,25 @@ class LinkBridgeApp(tk.Tk):
             if self.cfg.natural_thumbs
             else "Thumbs: square crop."
         )
+
+    def _on_prefer_original_toggle(self) -> None:
+        self.cfg.prefer_original_open = bool(self.prefer_original_var.get())
+        save_config(self.cfg)
+        self._append_log(
+            "Left-click: original file URL."
+            if self.cfg.prefer_original_open
+            else "Left-click: chat/sample URL."
+        )
+
+    def _save_text_edit_geometry(self, geo: str) -> None:
+        text = (geo or "").strip()
+        if not text or text == (self.cfg.text_edit_geometry or ""):
+            return
+        self.cfg.text_edit_geometry = text
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
 
     def save_settings(self) -> None:
         if not self._read_form_into_cfg():
@@ -536,13 +578,20 @@ class LinkBridgeApp(tk.Tk):
                 self._append_log(msg)
                 if msg.startswith("Connected") and self._roster is not None:
                     self._roster.load_page(0)
+                    self._sync_themes_tab()
 
             self._ui(_apply)
 
         def on_open(url: str) -> None:
             self._ui(lambda: self._handle_open(url))
 
-        client = BridgeClient(self.cfg, on_status=on_status, on_open_url=on_open)
+        def on_message(body: dict) -> None:
+            if body.get("op") == "hello_ok":
+                self._ui(self._sync_themes_tab)
+
+        client = BridgeClient(
+            self.cfg, on_status=on_status, on_open_url=on_open, on_message=on_message
+        )
         self._client = client
         try:
             loop.run_until_complete(client.run_forever())
@@ -558,6 +607,7 @@ class LinkBridgeApp(tk.Tk):
                     self.connect_btn.configure(state=tk.NORMAL),
                     self.disconnect_btn.configure(state=tk.DISABLED),
                     self._roster.clear() if self._roster else None,
+                    self._hide_themes_tab(),
                 )
             )
 
@@ -609,8 +659,30 @@ class LinkBridgeApp(tk.Tk):
             on_err,
         )
 
-    def _sets_list(self, on_ok, on_err) -> None:
-        self._schedule_coro(lambda c: c.request_sets_list(), on_ok, on_err)
+    def _sets_list(self, user: str, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_sets_list(user=user or ""),
+            on_ok,
+            on_err,
+        )
+
+    def _sets_rename(self, old: str, new: str, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_sets_rename(old, new),
+            on_ok,
+            on_err,
+        )
+
+    def _sets_delete(self, name: str, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_sets_delete(name),
+            on_ok,
+            on_err,
+        )
+
+    def _browse_users(self, kind: str, on_ok, on_err) -> None:
+        k = (kind or "roster").strip().lower()
+        self._schedule_coro(lambda c: c.request_browse_users(k), on_ok, on_err)
 
     def _set_middle_click_target(self, target: str) -> None:
         from link_bridge.config import save_config
@@ -653,6 +725,63 @@ class LinkBridgeApp(tk.Tk):
             on_ok,
             on_err,
         )
+
+    def _themes_fetch(self, on_ok, on_err) -> None:
+        self._schedule_coro(lambda c: c.request_themes_list(), on_ok, on_err)
+
+    def _themes_save(self, main, secondary, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_themes_save(main, secondary),
+            on_ok,
+            on_err,
+        )
+
+    def _sync_themes_tab(self) -> None:
+        client = self._client
+        allowed = bool(client and getattr(client, "themes_admin", False))
+        if allowed:
+            self._ensure_themes_tab()
+        else:
+            self._hide_themes_tab()
+
+    def _ensure_themes_tab(self) -> None:
+        if self._themes_tab is not None:
+            return
+        from link_bridge.themes_admin import ThemesAdminPanel
+
+        tab = ttk.Frame(self._main_nb, padding=6)
+        panel = ThemesAdminPanel(
+            tab,
+            fetch=self._themes_fetch,
+            save=self._themes_save,
+            on_log=self._append_log,
+        )
+        panel.pack(fill=tk.BOTH, expand=True)
+        self._main_nb.add(tab, text="Themes")
+        self._themes_tab = tab
+        self._themes = panel
+        try:
+            self._themes_tab_index = self._main_nb.index(tab)
+        except Exception:
+            self._themes_tab_index = None
+        self._append_log("Themes admin tab unlocked.")
+        panel.reload()
+
+    def _hide_themes_tab(self) -> None:
+        tab = self._themes_tab
+        if tab is None:
+            return
+        try:
+            self._main_nb.forget(tab)
+        except Exception:
+            pass
+        try:
+            tab.destroy()
+        except Exception:
+            pass
+        self._themes_tab = None
+        self._themes = None
+        self._themes_tab_index = None
 
     def _restore_window_state(self) -> None:
         if not self._want_zoomed:

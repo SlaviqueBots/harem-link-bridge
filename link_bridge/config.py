@@ -63,6 +63,10 @@ class BridgeConfig:
     preview_scale: float = 1.5
     # Middle-click post destination: "group" (main harem) or "dm".
     middle_click_target: str = "group"
+    # Left-click: prefer original file_url from the booru (PC downloads directly).
+    prefer_original_open: bool = True
+    # Flavour/note editor geometry, e.g. "420x220+100+80". Empty = center on main.
+    text_edit_geometry: str = ""
     # Last window geometry, e.g. "900x760+120+80". Empty = use DEFAULT_GEOMETRY.
     window_geometry: str = ""
     # Tk state: "normal" or "zoomed" (Windows maximized).
@@ -124,6 +128,8 @@ def load_config() -> BridgeConfig:
         middle_click_target=_normalize_post_target(
             raw.get("middle_click_target", "group")
         ),
+        prefer_original_open=bool(raw.get("prefer_original_open", True)),
+        text_edit_geometry=str(raw.get("text_edit_geometry") or ""),
         window_geometry=str(raw.get("window_geometry") or ""),
         window_state=str(raw.get("window_state") or "normal"),
     )

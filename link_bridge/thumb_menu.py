@@ -12,6 +12,26 @@ from collections.abc import Callable
 from typing import Any
 
 
+def apply_silent_craft_item(item: dict[str, Any] | None, action_id: str) -> None:
+    """Update a cached roster item after a quiet craft (no Telegram post)."""
+    if not item:
+        return
+    aid = str(action_id)
+    if ":" in aid:
+        op, raw = aid.split(":", 1)
+        if op == "flset":
+            item["flavour"] = raw
+        elif op == "ntset":
+            item["note"] = raw
+        elif op == "stadd":
+            item["set"] = raw
+        return
+    if aid == "rfl":
+        item["flavour"] = ""
+    elif aid == "rnt":
+        item["note"] = ""
+
+
 def popup_thumb_menu(
     widget: tk.Misc,
     event: Any,
@@ -22,16 +42,30 @@ def popup_thumb_menu(
     on_craft: Callable[[int, str], None],
     on_register_cup: Callable[[int], None] | None = None,
     on_show_checkpoint: Callable[[str], None] | None = None,
+    on_edit_flavour: Callable[[int], None] | None = None,
+    on_edit_note: Callable[[int], None] | None = None,
     can_tame: bool = False,
     is_tamed: bool = False,
     has_checkpoint: bool = False,
     checkpoint_image_url: str = "",
+    char_name: str = "",
+    set_names: list[str] | None = None,
+    current_set: str = "",
+    on_add_to_set: Callable[[int, str], None] | None = None,
+    on_new_set: Callable[[int], None] | None = None,
+    can_edit_sets: bool = True,
 ) -> None:
     """Show nested bridge craft menu at the pointer."""
     menu = tk.Menu(widget, tearoff=0)
 
     def craft(action_id: str) -> None:
         on_craft(int(char_id), action_id)
+
+    name = (char_name or "").strip()
+    if name:
+        label = name if len(name) <= 48 else name[:45] + "…"
+        menu.add_command(label=f"#{char_id} · {label}", state=tk.DISABLED)
+        menu.add_separator()
 
     menu.add_command(label="Open Omnicraft…", command=lambda: craft("omni"))
     menu.add_separator()
@@ -51,14 +85,49 @@ def popup_thumb_menu(
     menu.add_cascade(label="Checkpoint", menu=checkpoint)
 
     flavour = tk.Menu(menu, tearoff=0)
-    flavour.add_command(label="Set flavour…", command=lambda: craft("fl"))
+    if on_edit_flavour is not None:
+        flavour.add_command(
+            label="Set flavour…",
+            command=lambda: on_edit_flavour(int(char_id)),
+        )
+    else:
+        flavour.add_command(label="Set flavour…", command=lambda: craft("fl"))
     flavour.add_command(label="Remove flavour", command=lambda: craft("rfl"))
     menu.add_cascade(label="Flavour", menu=flavour)
 
     note = tk.Menu(menu, tearoff=0)
-    note.add_command(label="Set note…", command=lambda: craft("nt"))
+    if on_edit_note is not None:
+        note.add_command(
+            label="Set note…",
+            command=lambda: on_edit_note(int(char_id)),
+        )
+    else:
+        note.add_command(label="Set note…", command=lambda: craft("nt"))
     note.add_command(label="Remove note", command=lambda: craft("rnt"))
     menu.add_cascade(label="Note", menu=note)
+
+    if can_edit_sets and (on_add_to_set is not None or on_new_set is not None):
+        set_m = tk.Menu(menu, tearoff=0)
+        current = (current_set or "").strip()
+        cur_key = current.casefold()
+        names = [str(x).strip() for x in (set_names or []) if str(x).strip()]
+        for sname in names:
+            label = f"Add to {sname}"
+            if cur_key and sname.casefold() == cur_key:
+                set_m.add_command(label=label, state=tk.DISABLED)
+            elif on_add_to_set is not None:
+                set_m.add_command(
+                    label=label,
+                    command=lambda n=sname: on_add_to_set(int(char_id), n),
+                )
+        if names and on_new_set is not None:
+            set_m.add_separator()
+        if on_new_set is not None:
+            set_m.add_command(
+                label="Add to new set…",
+                command=lambda: on_new_set(int(char_id)),
+            )
+        menu.add_cascade(label="Set", menu=set_m)
 
     if can_tame or is_tamed:
         tame = tk.Menu(menu, tearoff=0)

@@ -38,6 +38,7 @@ class BridgeClient:
         self._task: asyncio.Task | None = None
         self._pending: dict[str, asyncio.Future] = {}
         self.bot_username: str = ""
+        self.themes_admin: bool = False
 
     @property
     def paused(self) -> bool:
@@ -66,16 +67,28 @@ class BridgeClient:
         self._stop.clear()
         delay = 1.0
         while not self._stop.is_set():
+            replaced = False
             try:
                 await self._session()
                 delay = 1.0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self.on_status(f"Disconnected: {exc}")
+                text = str(exc)
+                replaced = "4003" in text or "replaced" in text.lower()
+                if replaced:
+                    self.on_status(
+                        "Disconnected: another Link Bridge took this session "
+                        "(close other copies — published exe + DEV fight)."
+                    )
+                else:
+                    self.on_status(f"Disconnected: {exc}")
                 logger.info("bridge session ended: %s", exc)
             if self._stop.is_set():
                 break
+            # After a replace, wait longer so we don't ping-pong with the winner.
+            if replaced:
+                delay = max(delay, 12.0)
             self.on_status(f"Reconnecting in {delay:.0f}s…")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
@@ -93,26 +106,46 @@ class BridgeClient:
 
         url = self.cfg.ws_url()
         self.on_status(f"Connecting to {url}…")
-        async with connect(url, open_timeout=12, ping_interval=20, ping_timeout=20) as ws:
-            self._ws = ws
-            hello = self._hello_payload()
-            await ws.send(json.dumps(hello))
-            raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
-            msg = json.loads(raw)
-            if msg.get("op") != "hello_ok":
-                raise RuntimeError(f"hello rejected: {msg!r}")
-            self.bot_username = str(msg.get("bot_username") or "").lstrip("@")
-            # Always sync pause state after hello (clears sticky server pause).
-            await ws.send(json.dumps({"op": "pause" if self._paused else "resume"}))
-            self.on_status(
-                "Connected." + (" (paused)" if self._paused else "")
-            )
-            async for message in ws:
-                if self._stop.is_set():
-                    break
-                await self._handle(message)
-        self._ws = None
-        self._fail_pending("disconnected")
+        try:
+            async with connect(
+                url, open_timeout=12, ping_interval=20, ping_timeout=20
+            ) as ws:
+                self._ws = ws
+                hello = self._hello_payload()
+                await ws.send(json.dumps(hello))
+                raw = await asyncio.wait_for(ws.recv(), timeout=15.0)
+                msg = json.loads(raw)
+                if msg.get("op") != "hello_ok":
+                    raise RuntimeError(f"hello rejected: {msg!r}")
+                self.bot_username = str(msg.get("bot_username") or "").lstrip("@")
+                self.themes_admin = bool(msg.get("themes_admin"))
+                # Always sync pause state after hello (clears sticky server pause).
+                await ws.send(
+                    json.dumps({"op": "pause" if self._paused else "resume"})
+                )
+                self.on_status(
+                    "Connected." + (" (paused)" if self._paused else "")
+                )
+                self.on_message(msg)
+                async for message in ws:
+                    if self._stop.is_set():
+                        break
+                    await self._handle(message)
+        except Exception as exc:
+            # Surface websocket close code 4003 ("replaced") clearly.
+            name = type(exc).__name__
+            text = str(exc)
+            if "4003" in text or (
+                "ConnectionClosed" in name and "replaced" in text.lower()
+            ):
+                raise RuntimeError(
+                    "received 4003 (private use) replaced; then sent 4003 "
+                    "(private use) replaced"
+                ) from exc
+            raise
+        finally:
+            self._ws = None
+            self._fail_pending("disconnected")
 
     def _hello_payload(self) -> dict:
         if self.cfg.is_paired():
@@ -155,10 +188,20 @@ class BridgeClient:
             "post_grid_err",
             "sets_list_ok",
             "sets_list_err",
+            "sets_rename_ok",
+            "sets_rename_err",
+            "sets_delete_ok",
+            "sets_delete_err",
             "register_cup_ok",
             "register_cup_err",
             "dm_craft_ok",
             "dm_craft_err",
+            "themes_list_ok",
+            "themes_list_err",
+            "themes_save_ok",
+            "themes_save_err",
+            "browse_users_ok",
+            "browse_users_err",
         ):
             if op.startswith("roster_page"):
                 key = "roster_page"
@@ -170,6 +213,25 @@ class BridgeClient:
                 key = "register_cup"
             elif op.startswith("dm_craft"):
                 key = "dm_craft"
+            elif op.startswith("themes_list"):
+                key = "themes_list"
+            elif op.startswith("themes_save"):
+                key = "themes_save"
+            elif op.startswith("browse_users"):
+                kind = str(body.get("kind") or "roster").strip().lower() or "roster"
+                key = f"browse_users:{kind}"
+                # Also accept a bare key for older pending waits.
+                fut = self._pending.pop(key, None)
+                if fut is None:
+                    fut = self._pending.pop("browse_users", None)
+                if fut is not None and not fut.done():
+                    fut.set_result(body)
+                self.on_message(body)
+                return
+            elif op.startswith("sets_rename"):
+                key = "sets_rename"
+            elif op.startswith("sets_delete"):
+                key = "sets_delete"
             else:
                 key = "sets_list"
             fut = self._pending.pop(key, None)
@@ -204,10 +266,40 @@ class BridgeClient:
             timeout=timeout,
         )
 
-    async def request_sets_list(self, *, timeout: float = 20.0) -> dict[str, Any]:
+    async def request_sets_list(
+        self, *, user: str = "", timeout: float = 20.0
+    ) -> dict[str, Any]:
         return await self._request(
             "sets_list",
-            {"op": "sets_list"},
+            {
+                "op": "sets_list",
+                "user": (user or "").strip().lstrip("@"),
+            },
+            timeout=timeout,
+        )
+
+    async def request_sets_rename(
+        self, old: str, new: str, *, timeout: float = 20.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "sets_rename",
+            {
+                "op": "sets_rename",
+                "old": (old or "").strip(),
+                "new": (new or "").strip(),
+            },
+            timeout=timeout,
+        )
+
+    async def request_sets_delete(
+        self, name: str, *, timeout: float = 20.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "sets_delete",
+            {
+                "op": "sets_delete",
+                "name": (name or "").strip(),
+            },
             timeout=timeout,
         )
 
@@ -255,6 +347,51 @@ class BridgeClient:
         return await self._request(
             "dm_craft",
             {"op": "dm_craft", "char_id": int(char_id), "craft": str(craft or "omni")},
+            timeout=timeout,
+        )
+
+    async def request_themes_list(self, *, timeout: float = 30.0) -> dict[str, Any]:
+        return await self._request(
+            "themes_list",
+            {"op": "themes_list"},
+            timeout=timeout,
+        )
+
+    async def request_themes_save(
+        self,
+        main: list[str],
+        secondary: list[str],
+        *,
+        timeout: float = 60.0,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "themes_save",
+            {
+                "op": "themes_save",
+                "main": list(main or []),
+                "secondary": list(secondary or []),
+            },
+            timeout=timeout,
+        )
+
+    async def request_browse_users(
+        self, kind: str, *, timeout: float = 20.0
+    ) -> dict[str, Any]:
+        k = (kind or "roster").strip().lower()
+        allowed = {
+            "tamed",
+            "sets",
+            "roster",
+            "roster_done",
+            "roster_undone",
+            "done",
+            "undone",
+        }
+        if k not in allowed:
+            k = "roster"
+        return await self._request(
+            f"browse_users:{k}",
+            {"op": "browse_users", "kind": k},
             timeout=timeout,
         )
 

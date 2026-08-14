@@ -353,6 +353,15 @@ class JustifiedGallery:
             return
         entry["data"] = data
         url = entry.get("url") or ""
+        # Restore normal click after a × → retry cycle.
+        try:
+            self._bind_thumb(
+                entry["label"],
+                int(entry.get("char_id") or 0),
+                str(entry.get("post_url") or ""),
+            )
+        except Exception:
+            pass
 
         def on_aspect(a: float) -> None:
             def ui() -> None:
@@ -377,26 +386,53 @@ class JustifiedGallery:
 
     def _fetch(self, entry: dict[str, Any], gen: int) -> None:
         url = entry["url"]
+        attempts = int(entry.get("fetch_attempts") or 0)
 
         def on_data(data: bytes) -> None:
+            entry["fetch_attempts"] = 0
             try:
                 entry["label"].after(0, lambda d=data: self._apply_bytes(entry, d, gen))
             except Exception:
                 pass
 
         def on_err(_exc: BaseException) -> None:
-            def fail() -> None:
+            nxt = attempts + 1
+            entry["fetch_attempts"] = nxt
+
+            def fail_or_retry() -> None:
                 if gen != self._gen_fn() or not entry["label"].winfo_exists():
                     return
+                if nxt < 3:
+                    entry["label"].configure(text="…")
+                    delay = 700 * nxt
+                    try:
+                        entry["label"].after(
+                            delay, lambda: self._fetch(entry, gen)
+                        )
+                    except Exception:
+                        pass
+                    return
                 entry["label"].configure(text="×")
+                # Click × to try again.
+                entry["label"].bind(
+                    "<Button-1>",
+                    lambda _e, e=entry, g=gen: self._retry_fetch(e, g),
+                )
 
             try:
-                entry["label"].after(0, fail)
+                entry["label"].after(0, fail_or_retry)
             except Exception:
                 pass
 
         # Always go through the pool (even cache hits) so render() stays snappy.
         schedule_thumb_fetch(url, on_data=on_data, on_err=on_err)
+
+    def _retry_fetch(self, entry: dict[str, Any], gen: int) -> None:
+        if gen != self._gen_fn() or not entry["label"].winfo_exists():
+            return
+        entry["fetch_attempts"] = 0
+        entry["label"].configure(text="…", image="")
+        self._fetch(entry, gen)
 
     def _schedule_layout(self, *, immediate: bool = False) -> None:
         self._cancel_layout()
@@ -732,21 +768,37 @@ class PairGallery:
     def _fetch_side(self, entry: dict[str, Any], side: str, gen: int) -> None:
         url = entry[f"{side}_url"]
         lbl = entry[f"{side}_lbl"]
+        key = f"{side}_fetch_attempts"
+        attempts = int(entry.get(key) or 0)
 
         def on_data(data: bytes) -> None:
+            entry[key] = 0
             try:
                 lbl.after(0, lambda d=data: self._apply_side(entry, side, d, gen))
             except Exception:
                 pass
 
         def on_err(_exc: BaseException) -> None:
-            def fail() -> None:
+            nxt = attempts + 1
+            entry[key] = nxt
+
+            def fail_or_retry() -> None:
                 if gen != self._gen_fn() or not lbl.winfo_exists():
+                    return
+                if nxt < 3:
+                    lbl.configure(text="…")
+                    try:
+                        lbl.after(
+                            700 * nxt,
+                            lambda: self._fetch_side(entry, side, gen),
+                        )
+                    except Exception:
+                        pass
                     return
                 lbl.configure(text="×")
 
             try:
-                lbl.after(0, fail)
+                lbl.after(0, fail_or_retry)
             except Exception:
                 pass
 

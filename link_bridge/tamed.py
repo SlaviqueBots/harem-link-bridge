@@ -25,6 +25,22 @@ PAIR_PAD = 10
 PAIR_INNER_GAP = 6
 LABEL_H = 18
 HEADER_H = 22
+POST_BTN_H = 28
+
+
+def _normalize_whose(raw: str) -> str:
+    """Strip @ and whitespace from a Whose field."""
+    return (raw or "").strip().lstrip("@").strip()
+
+
+def _effective_owner_q(whose: str, name_filter: str = "") -> str:
+    """Build roster q: own name filter, or ``@user`` / ``@user needle``."""
+    owner = _normalize_whose(whose)
+    needle = (name_filter or "").strip()
+    if owner:
+        return f"@{owner} {needle}".strip()
+    return needle
+
 
 OkCb = Callable[[dict[str, Any]], None]
 ErrCb = Callable[[BaseException], None]
@@ -33,9 +49,12 @@ PostGridFn = Callable[[int, OkCb, ErrCb], None]
 OpenOmniFn = Callable[[int, OkCb, ErrCb], None]
 RegisterCupFn = Callable[[int, OkCb, ErrCb], None]
 DmCraftFn = Callable[[int, str, OkCb, ErrCb], None]
+GetSetNamesFn = Callable[[], list[str]]
+OnSetNamesFn = Callable[[list[str]], None]
 FocusPrefFn = Callable[[], bool]
 TargetGetFn = Callable[[], str]
 TargetSetFn = Callable[[str], None]
+BrowseUsersFn = Callable[[str, OkCb, ErrCb], None]
 
 
 class NumberedPairBoard:
@@ -50,6 +69,8 @@ class NumberedPairBoard:
         gen_fn: Callable[[], int],
         preview_scale: float = 1.0,
         page_base: int = 0,
+        on_post: Callable[[int], None] | None = None,
+        post_label: str = "Post",
     ) -> None:
         self._parent = parent
         self._photos = photos
@@ -57,6 +78,8 @@ class NumberedPairBoard:
         self._gen_fn = gen_fn
         self._preview_scale = max(0.5, min(2.0, float(preview_scale or 1.0)))
         self._page_base = max(0, int(page_base))
+        self._on_post = on_post
+        self._post_label = (post_label or "Post").strip() or "Post"
         self._entries: list[dict[str, Any]] = []
         self._canvas: tk.Canvas | None = None
         self._inner: tk.Frame | None = None
@@ -199,12 +222,21 @@ class NumberedPairBoard:
             before_lbl.pack()
             after_lbl.pack()
 
+            actions = ttk.Frame(card)
+            actions.pack(fill=tk.X, pady=(6, 0))
+            post_btn = ttk.Button(
+                actions,
+                text=self._post_label,
+                command=lambda c=cid: self._fire_post(c),
+            )
+            post_btn.pack(side=tk.RIGHT)
+
             self._bind_pair(
                 before_lbl,
                 after_lbl,
                 cid,
                 post_url,
-                extras=(card, head),
+                extras=(card, head, post_btn),
             )
 
             entry = {
@@ -219,6 +251,7 @@ class NumberedPairBoard:
                 "after_photo": None,
                 "char_id": cid,
                 "post_url": post_url,
+                "post_btn": post_btn,
             }
             self._entries.append(entry)
             if before_url:
@@ -231,6 +264,14 @@ class NumberedPairBoard:
                 after_lbl.configure(text="?")
 
         self._schedule_layout()
+
+    def _fire_post(self, char_id: int) -> None:
+        if self._on_post is None or char_id <= 0:
+            return
+        try:
+            self._on_post(int(char_id))
+        except Exception:
+            logger.exception("tamed post button failed char=%s", char_id)
 
     def _fetch_side(self, entry: dict[str, Any], side: str, gen: int) -> None:
         url = entry[f"{side}_url"]
@@ -289,7 +330,7 @@ class NumberedPairBoard:
         tile = self._tile_size()
         # Pair card width: two square tiles + gap + padding + border.
         pair_w = tile * 2 + PAIR_INNER_GAP + 16
-        pair_h = HEADER_H + LABEL_H + tile + 16
+        pair_h = HEADER_H + LABEL_H + tile + POST_BTN_H + 20
         cols = max(1, view_w // (pair_w + PAIR_PAD))
         # Stretch tile slightly if leftover space is large.
         usable = max(pair_w, (view_w - PAIR_PAD * (cols + 1)) // cols)
@@ -298,7 +339,7 @@ class NumberedPairBoard:
             extra = usable - (PAIR_INNER_GAP + 16)
             tile = max(tile, extra // 2)
             pair_w = tile * 2 + PAIR_INNER_GAP + 16
-            pair_h = HEADER_H + LABEL_H + tile + 16
+            pair_h = HEADER_H + LABEL_H + tile + POST_BTN_H + 20
 
         for entry in self._entries:
             for side in ("before", "after"):
@@ -353,7 +394,13 @@ class TamedPanel(ttk.Frame):
         should_focus_telegram: FocusPrefFn | None = None,
         get_post_target: TargetGetFn | None = None,
         set_post_target: TargetSetFn | None = None,
+        prefer_original_open: Callable[[], bool] | None = None,
+        get_text_edit_geometry: Callable[[], str] | None = None,
+        set_text_edit_geometry: Callable[[str], None] | None = None,
+        fetch_browse_users: BrowseUsersFn | None = None,
         preview_scale: float = 1.5,
+        get_set_names: GetSetNamesFn | None = None,
+        on_set_names: OnSetNamesFn | None = None,
         on_log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
@@ -365,18 +412,29 @@ class TamedPanel(ttk.Frame):
         self._should_focus = should_focus_telegram or (lambda: False)
         self._get_post_target = get_post_target or (lambda: "group")
         self._set_post_target = set_post_target
+        self._prefer_original = prefer_original_open or (lambda: True)
+        self._get_text_geo = get_text_edit_geometry or (lambda: "")
+        self._set_text_geo = set_text_edit_geometry
+        self._fetch_browse_users = fetch_browse_users
         self._preview_scale = max(0.5, min(2.0, float(preview_scale or 1.5)))
+        self._get_set_names = get_set_names or (lambda: [])
+        self._on_set_names = on_set_names
         self._on_log = on_log or (lambda _s: None)
         self._page = 0
         self._total = 0
         self._page_size = TAMED_PAGE_SIZE
         self._query = ""
+        self._whose = ""
+        self._scope = "own"
         self._items: list[dict[str, Any]] = []
         self._photos: list[Any] = []
         self._busy = False
         self._gen = 0
         self._gallery = None
         self._search_after: str | None = None
+        self._member_browse = None
+
+        from link_bridge.theme import bind_entry_clipboard
 
         search_row = ttk.Frame(self)
         search_row.pack(fill=tk.X, pady=(6, 0))
@@ -386,8 +444,6 @@ class TamedPanel(ttk.Frame):
         self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
         self.search_entry.bind("<Return>", lambda _e: self._search_now())
         self.search_var.trace_add("write", self._on_search_typed)
-        from link_bridge.theme import bind_entry_clipboard
-
         bind_entry_clipboard(self.search_entry)
         ttk.Button(search_row, text="Search", command=self._search_now).pack(
             side=tk.LEFT, padx=(6, 0)
@@ -416,9 +472,13 @@ class TamedPanel(ttk.Frame):
         self.grid_fr.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self._set_nav(False)
 
+    def _post_btn_label(self) -> str:
+        t = (self._get_post_target() or "group").strip().lower()
+        return "Post → DM" if t == "dm" else "Post → Group"
+
     def _target_label(self) -> str:
         t = (self._get_post_target() or "group").strip().lower()
-        return "Middle-click → DM" if t == "dm" else "Middle-click → Group"
+        return "Post target: DM" if t == "dm" else "Post target: Group"
 
     def _toggle_target(self) -> None:
         cur = (self._get_post_target() or "group").strip().lower()
@@ -432,6 +492,23 @@ class TamedPanel(ttk.Frame):
             self._target_btn.configure(text=self._target_label())
         except Exception:
             pass
+        # Refresh Post button captions on visible cards.
+        if self._gallery is not None and self._items:
+            try:
+                self._gallery._post_label = self._post_btn_label()
+                for entry in getattr(self._gallery, "_entries", []) or []:
+                    btn = entry.get("post_btn")
+                    if btn is not None:
+                        btn.configure(text=self._gallery._post_label)
+            except Exception:
+                pass
+
+    def _browse_pick_user(self, username: str) -> None:
+        self._whose = (username or "").strip().lstrip("@")
+        self.load_page(0)
+
+    def _effective_q(self) -> str:
+        return _effective_owner_q(self._whose, self.search_var.get())
 
     def set_preview_scale(self, scale: float) -> None:
         self._preview_scale = max(0.5, min(2.0, float(scale or 1.5)))
@@ -510,6 +587,9 @@ class TamedPanel(ttk.Frame):
         self._gen += 1
         gen = self._gen
         self._page = max(0, int(page))
+        self._whose = _normalize_whose(self._whose)
+        self._query = (self.search_var.get() or "").strip()
+        q = self._effective_q()
         self.meta_var.set("Loading tamed…")
         self._set_nav(False)
 
@@ -530,10 +610,14 @@ class TamedPanel(ttk.Frame):
                 self._page = int(body.get("page") or self._page)
             except Exception:
                 pass
+            self._scope = str(body.get("scope") or "own")
             pages = max(1, (self._total + self._page_size - 1) // self._page_size)
+            scope_bit = ""
+            if self._scope == "user" and self._whose:
+                scope_bit = f" · @{self._whose}"
             qbit = f" · “{self._query}”" if self._query else ""
             self.meta_var.set(
-                f"Tamed · page {self._page + 1}/{pages} · {self._total}{qbit}"
+                f"Tamed{scope_bit} · page {self._page + 1}/{pages} · {self._total}{qbit}"
             )
             self._render_grid()
             self._set_nav(True)
@@ -545,7 +629,7 @@ class TamedPanel(ttk.Frame):
             self.meta_var.set(f"Tamed failed: {exc}")
             self._set_nav(True)
 
-        self._fetch_tamed(self._page, self._query, on_ok, on_err)
+        self._fetch_tamed(self._page, q, on_ok, on_err)
 
     def _render_grid(self) -> None:
         release_photos(self._photos)
@@ -563,6 +647,8 @@ class TamedPanel(ttk.Frame):
             gen_fn=lambda: self._gen,
             preview_scale=self._preview_scale,
             page_base=self._page * self._page_size,
+            on_post=self._click_post,
+            post_label=self._post_btn_label(),
         )
         self._gallery.render(
             self._items, page_base=self._page * self._page_size
@@ -603,18 +689,22 @@ class TamedPanel(ttk.Frame):
         from link_bridge.open_image import open_full_image
 
         item = self._item_by_id(char_id) or {}
+        prefer = bool(self._prefer_original())
         if side == "before":
-            url = (
-                (item.get("before_image_url") or "").strip()
-                or (item.get("before_preview_url") or "").strip()
-            )
+            file_u = (item.get("before_file_url") or "").strip()
+            img_u = (item.get("before_image_url") or "").strip()
+            prev_u = (item.get("before_preview_url") or "").strip()
         else:
-            url = (
+            file_u = (item.get("after_file_url") or "").strip()
+            img_u = (
                 (item.get("after_image_url") or "").strip()
                 or (item.get("image_url") or "").strip()
-                or (item.get("after_preview_url") or "").strip()
+            )
+            prev_u = (
+                (item.get("after_preview_url") or "").strip()
                 or (item.get("preview_url") or "").strip()
             )
+        url = (file_u or img_u or prev_u) if prefer else (img_u or file_u or prev_u)
         if not url:
             self.meta_var.set(f"No {side} image for #{char_id}")
             return
@@ -629,6 +719,11 @@ class TamedPanel(ttk.Frame):
         from link_bridge.thumb_menu import popup_thumb_menu
 
         item = self._item_by_id(char_id) or {}
+        name = str(item.get("name") or "").strip()
+        if name:
+            self.meta_var.set(f"#{char_id} · {name}")
+        else:
+            self.meta_var.set(f"#{char_id}")
         popup_thumb_menu(
             event.widget,
             event,
@@ -640,11 +735,80 @@ class TamedPanel(ttk.Frame):
             if self._register_cup is not None
             else None,
             on_show_checkpoint=self._show_checkpoint_image,
+            on_edit_flavour=self._edit_flavour,
+            on_edit_note=self._edit_note,
             can_tame=bool(item.get("can_tame")),
             is_tamed=bool(item.get("tamed")),
             has_checkpoint=bool(item.get("has_checkpoint")),
             checkpoint_image_url=str(item.get("checkpoint_image_url") or ""),
+            char_name=name,
+            set_names=list(self._get_set_names()),
+            current_set=str(item.get("set") or ""),
+            on_add_to_set=self._add_to_set,
+            on_new_set=self._add_to_new_set,
+            can_edit_sets=bool(item.get("mine", True)) and not self._whose,
         )
+
+    def _edit_flavour(self, char_id: int) -> None:
+        from link_bridge.text_edit_dialog import ask_text
+
+        item = self._item_by_id(char_id) or {}
+        text = ask_text(
+            self,
+            title=f"Flavour #{char_id}",
+            initial=str(item.get("flavour") or ""),
+            prompt="Public flavour text (saved quietly — no Telegram post).",
+            geometry=self._get_text_geo(),
+            on_geometry=self._set_text_geo,
+        )
+        if text is None:
+            return
+        self._menu_craft(char_id, f"flset:{text}")
+
+    def _edit_note(self, char_id: int) -> None:
+        from link_bridge.text_edit_dialog import ask_text
+
+        item = self._item_by_id(char_id) or {}
+        text = ask_text(
+            self,
+            title=f"Note #{char_id}",
+            initial=str(item.get("note") or ""),
+            prompt="Owner-only note (saved quietly — no Telegram post).",
+            geometry=self._get_text_geo(),
+            on_geometry=self._set_text_geo,
+        )
+        if text is None:
+            return
+        self._menu_craft(char_id, f"ntset:{text}")
+
+    def _note_set_used(self, name: str) -> None:
+        n = " ".join((name or "").split())
+        if not n or self._on_set_names is None:
+            return
+        names = list(self._get_set_names())
+        key = n.casefold()
+        if not any(x.casefold() == key for x in names):
+            names.append(n)
+            self._on_set_names(names)
+
+    def _add_to_set(self, char_id: int, set_name: str) -> None:
+        name = " ".join((set_name or "").split())
+        if not name:
+            return
+        self._menu_craft(char_id, f"stadd:{name}")
+
+    def _add_to_new_set(self, char_id: int) -> None:
+        from link_bridge.text_edit_dialog import ask_set_name
+
+        text = ask_set_name(
+            self,
+            title=f"New set #{char_id}",
+            geometry=self._get_text_geo(),
+            on_geometry=self._set_text_geo,
+        )
+        if text is None:
+            return
+        self._menu_craft(char_id, f"stadd:{text}")
 
     def _show_checkpoint_image(self, url: str) -> None:
         from link_bridge.open_image import open_full_image
@@ -704,8 +868,17 @@ class TamedPanel(ttk.Frame):
         def on_ok(body: dict) -> None:
             self._busy = False
             if body.get("op") == "dm_craft_ok":
-                self.meta_var.set(f"DM craft #{char_id}: {label} ✓")
-                if self._should_focus():
+                detail = str(body.get("detail") or "ok").strip()
+                silent = bool(body.get("silent"))
+                notice = detail if detail and detail != "ok" else f"{label} ✓"
+                self.meta_var.set(f"#{char_id}: {notice}")
+                if silent:
+                    from link_bridge.thumb_menu import apply_silent_craft_item
+
+                    apply_silent_craft_item(self._item_by_id(char_id), action_id)
+                    if str(action_id).startswith("stadd:"):
+                        self._note_set_used(str(action_id).split(":", 1)[1])
+                elif self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram
 
@@ -782,7 +955,13 @@ class TamedPanel(ttk.Frame):
 
         def on_err(exc: BaseException) -> None:
             self._busy = False
-            self.meta_var.set(f"Post failed: {exc}")
+            msg = str(exc or "failed")
+            if "disconnect" in msg.lower() or "not connected" in msg.lower():
+                self.meta_var.set(
+                    "Post failed: disconnected (close other Link Bridge copies)"
+                )
+            else:
+                self.meta_var.set(f"Post failed: {msg}")
             self._set_nav(True)
 
         self._post_grid(int(char_id), on_ok, on_err)
