@@ -49,6 +49,8 @@ class LinkBridgeApp(tk.Tk):
         self._themes = None
         self._themes_tab = None
         self._themes_tab_index = None
+        self._conjure_tab = None
+        self._conjure = None
         self._geo_save_after: str | None = None
         self._geo_ready = False
         self._want_zoomed = (self.cfg.window_state or "normal").strip().lower() == "zoomed"
@@ -133,6 +135,7 @@ class LinkBridgeApp(tk.Tk):
         self._sets = None
 
         self._build_setup_tab(setup_tab, pad)
+        self._ensure_conjure_tab()
 
     def _build_setup_tab(self, root: ttk.Frame, pad: dict) -> None:
         steps = ttk.LabelFrame(root, text="Setup (once)", padding=8)
@@ -439,6 +442,14 @@ class LinkBridgeApp(tk.Tk):
             try:
                 if host.winfo_exists():
                     host.apply_ui_theme(mode)
+            except Exception:
+                pass
+        conjure = getattr(self, "_conjure", None)
+        if conjure is not None:
+            try:
+                from link_bridge.theme import palette
+
+                conjure.apply_ui_theme(palette(mode))
             except Exception:
                 pass
         try:
@@ -1075,7 +1086,14 @@ class LinkBridgeApp(tk.Tk):
             on_log=self._append_log,
         )
         panel.pack(fill=tk.BOTH, expand=True)
-        self._main_nb.add(tab, text="Themes")
+        # Keep Conjure after Themes when both exist.
+        if self._conjure_tab is not None:
+            try:
+                self._main_nb.insert(self._conjure_tab, tab, text="Themes")
+            except Exception:
+                self._main_nb.add(tab, text="Themes")
+        else:
+            self._main_nb.add(tab, text="Themes")
         self._themes_tab = tab
         self._themes = panel
         try:
@@ -1100,6 +1118,60 @@ class LinkBridgeApp(tk.Tk):
         self._themes_tab = None
         self._themes = None
         self._themes_tab_index = None
+
+    def _ensure_conjure_tab(self) -> None:
+        if self._conjure_tab is not None:
+            return
+        try:
+            from conjure_finder.bootstrap import apply_env, set_app_root
+            from conjure_finder.gui import ConjureFinderApp
+            from conjure_finder.settings import apply_settings_file, settings_status
+            from link_bridge.config import app_dir
+        except Exception as exc:
+            self._append_log(f"Conjure Finder tab unavailable: {exc}")
+            return
+
+        try:
+            set_app_root(app_dir())
+            apply_env()
+            apply_settings_file()
+        except Exception as exc:
+            self._append_log(f"Conjure Finder env load failed: {exc}")
+
+        tab = ttk.Frame(self._main_nb, padding=2)
+        try:
+            panel = ConjureFinderApp(tab, embedded=True)
+            panel.pack(fill=tk.BOTH, expand=True)
+        except Exception as exc:
+            self._append_log(f"Conjure Finder failed to start: {exc}")
+            try:
+                tab.destroy()
+            except Exception:
+                pass
+            return
+
+        self._main_nb.add(tab, text="Conjure")
+        self._conjure_tab = tab
+        self._conjure = panel
+        try:
+            from link_bridge.theme import normalize_theme, palette
+
+            panel.apply_ui_theme(palette(normalize_theme(self.cfg.ui_theme)))
+        except Exception:
+            try:
+                panel._sync_bridge_theme()
+            except Exception:
+                pass
+        try:
+            st = settings_status()
+            if not (st.get("danbooru") or st.get("rule34")):
+                panel.status_var.set(
+                    "No API keys found — open Settings… (uses conjure_finder.env "
+                    "next to this Bridge config)."
+                )
+        except Exception:
+            pass
+        self._append_log("Conjure Finder tab ready.")
 
     def _restore_window_state(self) -> None:
         if not self._want_zoomed:
