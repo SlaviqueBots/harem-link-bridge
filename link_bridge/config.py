@@ -71,6 +71,14 @@ class BridgeConfig:
     window_geometry: str = ""
     # Tk state: "normal" or "zoomed" (Windows maximized).
     window_state: str = "normal"
+    # Soft beep when an in-client omni craft lands a new image.
+    omni_beep: bool = False
+    # Left-click opens in-client Omnicraft instead of the image viewer.
+    left_click_omni: bool = False
+    # Roster: hide cards that already belong to any set.
+    hide_in_any_set: bool = False
+    # Mouse-wheel scroll strength (0.25–6.0). Default 3.0 with smooth easing.
+    scroll_speed: float = 3.0
 
     def ws_url(self) -> str:
         host = (self.host or "").strip() or "127.0.0.1"
@@ -132,6 +140,10 @@ def load_config() -> BridgeConfig:
         text_edit_geometry=str(raw.get("text_edit_geometry") or ""),
         window_geometry=str(raw.get("window_geometry") or ""),
         window_state=str(raw.get("window_state") or "normal"),
+        omni_beep=bool(raw.get("omni_beep", False)),
+        left_click_omni=bool(raw.get("left_click_omni", False)),
+        hide_in_any_set=bool(raw.get("hide_in_any_set", False)),
+        scroll_speed=_clamp_scroll_speed(raw.get("scroll_speed", 3.0)),
     )
     cfg.ensure_device_id()
     return cfg
@@ -143,6 +155,14 @@ def _clamp_preview_scale(raw: object) -> float:
     except Exception:
         v = 1.5
     return max(0.5, min(2.0, round(v, 2)))
+
+
+def _clamp_scroll_speed(raw: object) -> float:
+    try:
+        v = float(raw)
+    except Exception:
+        v = 3.0
+    return max(0.25, min(6.0, round(v, 2)))
 
 
 def _normalize_post_target(raw: object) -> str:

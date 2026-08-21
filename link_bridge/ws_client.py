@@ -202,6 +202,14 @@ class BridgeClient:
             "themes_save_err",
             "browse_users_ok",
             "browse_users_err",
+            "market_page_ok",
+            "market_page_err",
+            "market_buy_ok",
+            "market_buy_err",
+            "omni_state_ok",
+            "omni_state_err",
+            "omni_tap_ok",
+            "omni_tap_err",
         ):
             if op.startswith("roster_page"):
                 key = "roster_page"
@@ -217,6 +225,16 @@ class BridgeClient:
                 key = "themes_list"
             elif op.startswith("themes_save"):
                 key = "themes_save"
+            elif op.startswith("market_page"):
+                key = "market_page"
+            elif op.startswith("market_buy"):
+                key = "market_buy"
+            elif op.startswith("omni_state"):
+                cid = int(body.get("char_id") or 0)
+                key = f"omni_state:{cid}" if cid else "omni_state"
+            elif op.startswith("omni_tap"):
+                cid = int(body.get("char_id") or 0)
+                key = f"omni_tap:{cid}" if cid else "omni_tap"
             elif op.startswith("browse_users"):
                 kind = str(body.get("kind") or "roster").strip().lower() or "roster"
                 key = f"browse_users:{kind}"
@@ -235,6 +253,8 @@ class BridgeClient:
             else:
                 key = "sets_list"
             fut = self._pending.pop(key, None)
+            if fut is None and ":" in key:
+                fut = self._pending.pop(key.split(":")[0], None)
             if fut is not None and not fut.done():
                 fut.set_result(body)
             self.on_message(body)
@@ -299,6 +319,24 @@ class BridgeClient:
             {
                 "op": "sets_delete",
                 "name": (name or "").strip(),
+            },
+            timeout=timeout,
+        )
+
+    async def request_sets_present(
+        self,
+        name: str,
+        *,
+        target: str = "group",
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        dest = "dm" if str(target or "").strip().lower() == "dm" else "group"
+        return await self._request(
+            "sets_present",
+            {
+                "op": "sets_present",
+                "set_name": (name or "").strip(),
+                "target": dest,
             },
             timeout=timeout,
         )
@@ -384,8 +422,12 @@ class BridgeClient:
             "roster",
             "roster_done",
             "roster_undone",
+            "roster_flavoured",
+            "roster_unflavoured",
             "done",
             "undone",
+            "flavoured",
+            "unflavoured",
         }
         if k not in allowed:
             k = "roster"
@@ -394,6 +436,69 @@ class BridgeClient:
             {"op": "browse_users", "kind": k},
             timeout=timeout,
         )
+
+    async def request_market_page(
+        self,
+        page: int = 0,
+        page_size: int = 96,
+        *,
+        q: str = "",
+        min_price: str = "",
+        max_price: str = "",
+        timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "op": "market_page",
+            "page": int(page),
+            "page_size": int(page_size),
+            "q": (q or "").strip(),
+        }
+        if (min_price or "").strip() != "":
+            payload["min_price"] = (min_price or "").strip()
+        if (max_price or "").strip() != "":
+            payload["max_price"] = (max_price or "").strip()
+        return await self._request("market_page", payload, timeout=timeout)
+
+    async def request_market_buy(
+        self, listing_id: int, *, timeout: float = 45.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "market_buy",
+            {"op": "market_buy", "listing_id": int(listing_id)},
+            timeout=timeout,
+        )
+
+    async def request_omni_state(
+        self, char_id: int, *, mode: str = "omni", timeout: float = 20.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            f"omni_state:{int(char_id)}",
+            {
+                "op": "omni_state",
+                "char_id": int(char_id),
+                "mode": str(mode or "omni"),
+            },
+            timeout=timeout,
+        )
+
+    async def request_omni_tap(
+        self,
+        char_id: int,
+        craft: str,
+        arg: str | None = None,
+        *,
+        mode: str = "omni",
+        timeout: float = 180.0,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "op": "omni_tap",
+            "char_id": int(char_id),
+            "craft": str(craft or ""),
+            "mode": str(mode or "omni"),
+        }
+        if arg is not None:
+            payload["arg"] = arg
+        return await self._request(f"omni_tap:{int(char_id)}", payload, timeout=timeout)
 
     async def _request(
         self, key: str, payload: dict, *, timeout: float

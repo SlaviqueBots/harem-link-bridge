@@ -40,12 +40,19 @@ class LinkBridgeApp(tk.Tk):
         self._lock_watcher = None
         self._roster = None
         self._sets = None
+        self._omni_wins: list = []
         self._themes = None
         self._themes_tab = None
         self._themes_tab_index = None
         self._geo_save_after: str | None = None
         self._geo_ready = False
         self._want_zoomed = (self.cfg.window_state or "normal").strip().lower() == "zoomed"
+        try:
+            from link_bridge.thumb_grid import enable_default_disk_cache
+
+            enable_default_disk_cache()
+        except Exception:
+            pass
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
@@ -72,17 +79,12 @@ class LinkBridgeApp(tk.Tk):
 
         self._main_nb = ttk.Notebook(root)
         self._main_nb.pack(fill=tk.BOTH, expand=True)
-        roster_tab = ttk.Frame(self._main_nb, padding=4)
+        roster_tab = ttk.Frame(self._main_nb, padding=2)
         setup_tab = ttk.Frame(self._main_nb, padding=8)
         self._main_nb.add(roster_tab, text="Roster")
         self._main_nb.add(setup_tab, text="Setup")
 
-        status_row = ttk.Frame(roster_tab)
-        status_row.pack(fill=tk.X, pady=(0, 4))
         self.status_var = tk.StringVar(value=self._idle_status_text())
-        ttk.Label(status_row, textvariable=self.status_var, wraplength=640).pack(
-            side=tk.LEFT, fill=tk.X, expand=True
-        )
 
         from link_bridge.roster import RosterPanel
 
@@ -90,22 +92,32 @@ class LinkBridgeApp(tk.Tk):
             roster_tab,
             fetch_page=self._roster_fetch_page,
             open_omni=self._roster_open_omni,
+            open_omni_ui=self._open_omni_ui,
             post_grid=self._roster_post_grid,
             register_cup=self._roster_register_cup,
             dm_craft=self._roster_dm_craft,
             list_sets=self._sets_list,
             rename_set=self._sets_rename,
             delete_set=self._sets_delete,
+            present_set=self._sets_present,
             fetch_tamed=self._roster_fetch_tamed,
+            fetch_market=self._market_fetch_page,
+            buy_market=self._market_buy,
             should_focus_telegram=lambda: bool(self.cfg.focus_telegram),
             get_post_target=lambda: self.cfg.middle_click_target,
             set_post_target=self._set_middle_click_target,
             prefer_original_open=lambda: bool(self.cfg.prefer_original_open),
+            get_left_click_omni=lambda: bool(self.cfg.left_click_omni),
+            set_left_click_omni=self._set_left_click_omni,
+            get_hide_in_any_set=lambda: bool(self.cfg.hide_in_any_set),
+            set_hide_in_any_set=self._set_hide_in_any_set,
+            status_var=self.status_var,
             get_text_edit_geometry=lambda: str(self.cfg.text_edit_geometry or ""),
             set_text_edit_geometry=self._save_text_edit_geometry,
             fetch_browse_users=self._browse_users,
             natural_thumbs=bool(self.cfg.natural_thumbs),
             preview_scale=float(self.cfg.preview_scale or 1.5),
+            scroll_speed=float(self.cfg.scroll_speed or 3.0),
             on_log=self._append_log,
         )
         self._roster.pack(fill=tk.BOTH, expand=True)
@@ -224,6 +236,29 @@ class LinkBridgeApp(tk.Tk):
             side=tk.LEFT
         )
         ttk.Label(opts6, text="(0.5×–2×)").pack(side=tk.LEFT, padx=(4, 0))
+
+        opts6b = ttk.Frame(root)
+        opts6b.pack(fill=tk.X, **pad)
+        ttk.Label(opts6b, text="Scroll speed").pack(side=tk.LEFT)
+        self.scroll_speed_var = tk.DoubleVar(
+            value=float(self.cfg.scroll_speed or 3.0)
+        )
+        self.scroll_speed_label = tk.StringVar(
+            value=f"{float(self.cfg.scroll_speed or 3.0):.2f}×"
+        )
+        self._scroll_speed_after: str | None = None
+        ttk.Scale(
+            opts6b,
+            from_=0.25,
+            to=6.0,
+            orient=tk.HORIZONTAL,
+            variable=self.scroll_speed_var,
+            command=self._on_scroll_speed_slide,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        ttk.Label(opts6b, textvariable=self.scroll_speed_label, width=5).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(opts6b, text="(wheel)").pack(side=tk.LEFT, padx=(4, 0))
 
         opts7 = ttk.Frame(root)
         opts7.pack(fill=tk.X, **pad)
@@ -348,9 +383,10 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
         self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
         self.cfg.prefer_original_open = bool(self.prefer_original_var.get())
-        from link_bridge.config import _clamp_preview_scale
+        from link_bridge.config import _clamp_preview_scale, _clamp_scroll_speed
 
         self.cfg.preview_scale = _clamp_preview_scale(self.preview_scale_var.get())
+        self.cfg.scroll_speed = _clamp_scroll_speed(self.scroll_speed_var.get())
         self.cfg.ensure_device_id()
         return True
 
@@ -379,6 +415,32 @@ class LinkBridgeApp(tk.Tk):
         save_config(self.cfg)
         if self._roster is not None:
             self._roster.set_preview_scale(scale)
+
+    def _on_scroll_speed_slide(self, _value=None) -> None:
+        from link_bridge.config import _clamp_scroll_speed
+
+        speed = _clamp_scroll_speed(self.scroll_speed_var.get())
+        self.scroll_speed_label.set(f"{speed:.2f}×")
+        if self._scroll_speed_after is not None:
+            try:
+                self.after_cancel(self._scroll_speed_after)
+            except Exception:
+                pass
+        self._scroll_speed_after = self.after(180, self._commit_scroll_speed)
+
+    def _commit_scroll_speed(self) -> None:
+        self._scroll_speed_after = None
+        from link_bridge.config import _clamp_scroll_speed
+
+        speed = _clamp_scroll_speed(self.scroll_speed_var.get())
+        self.scroll_speed_var.set(speed)
+        self.scroll_speed_label.set(f"{speed:.2f}×")
+        if abs(speed - float(self.cfg.scroll_speed or 3.0)) < 0.01:
+            return
+        self.cfg.scroll_speed = speed
+        save_config(self.cfg)
+        if self._roster is not None:
+            self._roster.set_scroll_speed(speed)
 
     def _on_focus_tg_toggle(self) -> None:
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
@@ -623,25 +685,32 @@ class LinkBridgeApp(tk.Tk):
                 try:
                     result = await coro_factory(client)
                 except Exception as exc:
-                    self._ui(lambda: on_err(exc))
+                    err = exc
+                    self._ui(lambda e=err: on_err(e))
                     return
-                self._ui(lambda: on_ok(result))
+                self._ui(lambda r=result: on_ok(r))
 
             asyncio.create_task(_run())
 
         loop.call_soon_threadsafe(_go)
 
     def _roster_fetch_page(
-        self, page: int, q: str, done: int, set_name: str, on_ok, on_err
+        self, page: int, q: str, done: int, set_name: str, on_ok, on_err, *, kind: str = ""
     ) -> None:
         from link_bridge.roster import PAGE_SIZE
 
         query = (q or "").strip()
         done_flag = int(done)
         set_n = (set_name or "").strip()
+        kind_s = (kind or "").strip()
         self._schedule_coro(
             lambda c: c.request_roster_page(
-                page, PAGE_SIZE, q=query, done=done_flag, set_name=set_n
+                page,
+                PAGE_SIZE,
+                q=query,
+                done=done_flag,
+                set_name=set_n,
+                kind=kind_s,
             ),
             on_ok,
             on_err,
@@ -655,6 +724,30 @@ class LinkBridgeApp(tk.Tk):
             lambda c: c.request_roster_page(
                 page, TAMED_PAGE_SIZE, q=query, done=0, kind="tamed"
             ),
+            on_ok,
+            on_err,
+        )
+
+    def _market_fetch_page(
+        self, page: int, q: str, min_price: str, max_price: str, on_ok, on_err
+    ) -> None:
+        from link_bridge.roster import PAGE_SIZE
+
+        self._schedule_coro(
+            lambda c: c.request_market_page(
+                page,
+                PAGE_SIZE,
+                q=(q or "").strip(),
+                min_price=(min_price or "").strip(),
+                max_price=(max_price or "").strip(),
+            ),
+            on_ok,
+            on_err,
+        )
+
+    def _market_buy(self, listing_id: int, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_market_buy(int(listing_id)),
             on_ok,
             on_err,
         )
@@ -680,6 +773,14 @@ class LinkBridgeApp(tk.Tk):
             on_err,
         )
 
+    def _sets_present(self, name: str, on_ok, on_err) -> None:
+        target = (self.cfg.middle_click_target or "group").strip().lower()
+        self._schedule_coro(
+            lambda c: c.request_sets_present(name, target=target),
+            on_ok,
+            on_err,
+        )
+
     def _browse_users(self, kind: str, on_ok, on_err) -> None:
         k = (kind or "roster").strip().lower()
         self._schedule_coro(lambda c: c.request_browse_users(k), on_ok, on_err)
@@ -696,12 +797,141 @@ class LinkBridgeApp(tk.Tk):
         if self._roster is not None and hasattr(self._roster, "sync_target_buttons"):
             self._roster.sync_target_buttons()
 
+    def _set_left_click_omni(self, enabled: bool) -> None:
+        from link_bridge.config import save_config
+
+        self.cfg.left_click_omni = bool(enabled)
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        if self._roster is not None and hasattr(self._roster, "sync_lmb_omni_button"):
+            self._roster.sync_lmb_omni_button()
+
+    def _set_hide_in_any_set(self, enabled: bool) -> None:
+        from link_bridge.config import save_config
+
+        self.cfg.hide_in_any_set = bool(enabled)
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        if self._roster is not None and hasattr(
+            self._roster, "sync_hide_in_any_set_button"
+        ):
+            self._roster.sync_hide_in_any_set_button()
+
     def _roster_open_omni(self, char_id: int, on_ok, on_err) -> None:
+        self._open_omni_ui(int(char_id))
+        on_ok({"op": "open_omni_ok", "char_id": int(char_id)})
+
+    def _omni_fetch_state(self, char_id: int, on_ok, on_err, mode: str = "omni") -> None:
         self._schedule_coro(
-            lambda c: c.request_open_omni(char_id),
+            lambda c: c.request_omni_state(int(char_id), mode=mode),
             on_ok,
             on_err,
         )
+
+    def _omni_tap(
+        self, char_id: int, craft: str, arg: str | None, on_ok, on_err, mode: str = "omni"
+    ) -> None:
+        self._schedule_coro(
+            lambda c: c.request_omni_tap(int(char_id), craft, arg, mode=mode),
+            on_ok,
+            on_err,
+        )
+
+    def _omni_dm_preview(self, char_id: int, on_ok, on_err) -> None:
+        """Post plain max-res card into bot DMs (checkres-style, no omni keyboard)."""
+        self._roster_dm_craft(int(char_id), "card", on_ok, on_err)
+
+    def _open_omni_ui(self, char_id: int, mode: str = "omni") -> None:
+        from link_bridge.omni import OmniHost
+
+        host = getattr(self, "_omni_host", None)
+        if host is None or not host.winfo_exists():
+            host = OmniHost(
+                self,
+                fetch_state=self._omni_fetch_state,
+                tap=self._omni_tap,
+                beep_get=lambda: bool(self.cfg.omni_beep),
+                beep_set=self._set_omni_beep,
+                prefer_original=lambda: bool(self.cfg.prefer_original_open),
+                get_text_geo=lambda: str(self.cfg.text_edit_geometry or ""),
+                set_text_geo=self._save_text_edit_geometry,
+                on_log=self._append_log,
+                on_done_changed=self._on_omni_done_changed,
+                fetch_undone=self._omni_fetch_undone,
+                dm_preview=self._omni_dm_preview,
+                on_media_changed=self._on_omni_media_changed,
+            )
+            self._omni_host = host
+
+            def _drop(event=None) -> None:
+                if event is not None and getattr(event, "widget", None) is not host:
+                    return
+                try:
+                    if self._roster is not None:
+                        self._roster.flush_omni_media()
+                except Exception:
+                    logger.debug("omni media flush failed", exc_info=True)
+                self._omni_host = None
+
+            host.bind("<Destroy>", _drop)
+        host.open_card(int(char_id), mode=mode)
+
+    def _omni_fetch_undone(self, on_ok, on_err, *, exclude_id: int = 0) -> None:
+        from link_bridge.roster import PAGE_SIZE
+
+        def _ok(body: dict) -> None:
+            # Drop the just-finished card client-side if still listed.
+            if exclude_id and isinstance(body.get("items"), list):
+                body = dict(body)
+                body["items"] = [
+                    it
+                    for it in body["items"]
+                    if int(it.get("id") or 0) != int(exclude_id)
+                ]
+            on_ok(body)
+
+        self._schedule_coro(
+            lambda c: c.request_roster_page(
+                0,
+                PAGE_SIZE,
+                q="",
+                done=0,
+                set_name="",
+                kind="undone",
+            ),
+            _ok,
+            on_err,
+        )
+
+    def _on_omni_done_changed(self, char_id: int, done: bool) -> None:
+        if self._roster is None:
+            return
+        try:
+            if done and getattr(self._roster, "_mode", "") == "undone":
+                self._roster.remove_char_from_view(int(char_id))
+            elif (not done) and getattr(self._roster, "_mode", "") == "done":
+                self._roster.remove_char_from_view(int(char_id))
+        except Exception:
+            logger.debug("omni done sync failed", exc_info=True)
+
+    def _on_omni_media_changed(self, char_id: int, media: dict) -> None:
+        if self._roster is None:
+            return
+        try:
+            self._roster.note_char_media(int(char_id), dict(media or {}))
+        except Exception:
+            logger.debug("omni media note failed", exc_info=True)
+
+    def _set_omni_beep(self, flag: bool) -> None:
+        self.cfg.omni_beep = bool(flag)
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
 
     def _roster_post_grid(self, char_id: int, on_ok, on_err) -> None:
         target = (self.cfg.middle_click_target or "group").strip().lower()

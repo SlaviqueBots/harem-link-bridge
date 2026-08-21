@@ -34,6 +34,7 @@ RegisterCupFn = Callable[[int, OkCb, ErrCb], None]
 DmCraftFn = Callable[[int, str, OkCb, ErrCb], None]
 RenameSetFn = Callable[[str, str, OkCb, ErrCb], None]
 DeleteSetFn = Callable[[str, OkCb, ErrCb], None]
+PresentSetFn = Callable[[str, OkCb, ErrCb], None]
 GetSetNamesFn = Callable[[], list[str]]
 OnSetNamesFn = Callable[[list[str]], None]
 FocusPrefFn = Callable[[], bool]
@@ -53,10 +54,12 @@ class SetsPanel(ttk.Frame):
         fetch_page: FetchPageFn,
         post_grid: PostGridFn,
         open_omni: OpenOmniFn | None = None,
+        open_omni_ui: Callable[[int], None] | None = None,
         register_cup: RegisterCupFn | None = None,
         dm_craft: DmCraftFn | None = None,
         rename_set: RenameSetFn | None = None,
         delete_set: DeleteSetFn | None = None,
+        present_set: PresentSetFn | None = None,
         get_set_names: GetSetNamesFn | None = None,
         on_set_names: OnSetNamesFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
@@ -75,10 +78,12 @@ class SetsPanel(ttk.Frame):
         self._fetch_page = fetch_page
         self._post_grid = post_grid
         self._open_omni = open_omni
+        self._open_omni_ui = open_omni_ui
         self._register_cup = register_cup
         self._dm_craft = dm_craft
         self._rename_set = rename_set
         self._delete_set = delete_set
+        self._present_set = present_set
         self._get_set_names = get_set_names
         self._on_set_names = on_set_names
         self._should_focus = should_focus_telegram or (lambda: False)
@@ -382,7 +387,7 @@ class SetsPanel(ttk.Frame):
         delete(name, on_ok, on_err)
 
     def _popup_set_list_menu(self, event) -> None:
-        if not self._can_rename_sets() or not self._names:
+        if not self._names:
             return
         idx = self._list.nearest(event.y)
         if idx < 0 or idx >= len(self._names):
@@ -391,7 +396,14 @@ class SetsPanel(ttk.Frame):
         self._list.selection_set(idx)
         self._list.activate(idx)
         menu = tk.Menu(self._list, tearoff=0)
-        menu.add_command(label="Rename…", command=self._rename_selected)
+        if self._present_set is not None and not self._whose:
+            menu.add_command(label="Post set…", command=self._present_selected)
+        if self._can_rename_sets():
+            menu.add_command(label="Rename…", command=self._rename_selected)
+        if self._can_delete_sets():
+            menu.add_command(label="Delete set…", command=self._arm_delete)
+        if menu.index("end") is None:
+            return
         try:
             menu.tk_popup(int(event.x_root), int(event.y_root))
         finally:
@@ -399,6 +411,45 @@ class SetsPanel(ttk.Frame):
                 menu.grab_release()
             except Exception:
                 pass
+
+    def _present_selected(self) -> None:
+        if self._present_set is None or self._busy or self._whose:
+            return
+        sel = self._list.curselection()
+        if sel:
+            idx = int(sel[0])
+        elif self._selected in self._names:
+            idx = self._names.index(self._selected)
+        else:
+            return
+        if idx < 0 or idx >= len(self._names):
+            return
+        name = self._names[idx]
+        self._busy = True
+        dest = "DM" if (self._get_post_target() or "group") == "dm" else "Group"
+        self.meta_var.set(f"Posting set “{name}” → {dest}…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "sets_present_ok":
+                ok = int(body.get("ok") or 0)
+                fail = int(body.get("fail") or 0)
+                self.meta_var.set(f"Posted “{name}” · {ok} ok · {fail} fail → {dest}")
+                self._on_log(f"Post set “{name}” → {dest} ({ok}/{fail})")
+                if self._should_focus():
+                    from link_bridge.focus_telegram import focus_telegram
+
+                    focus_telegram()
+            else:
+                self.meta_var.set(
+                    f"Post set failed: {body.get('error') or 'failed'}"
+                )
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Post set failed: {exc}")
+
+        self._present_set(name, on_ok, on_err)
 
     def _rename_selected(self) -> None:
         if not self._can_rename_sets():
@@ -818,8 +869,17 @@ class SetsPanel(ttk.Frame):
             current_set=str(item.get("set") or self._selected or ""),
             on_add_to_set=self._add_to_set,
             on_new_set=self._add_to_new_set,
+            on_remove_from_set=self._remove_from_set,
             can_edit_sets=bool(item.get("mine", True)) and not self._whose,
         )
+
+    def _remove_from_set(self, char_id: int, set_name: str) -> None:
+        name = " ".join((set_name or "").split())
+        if not name:
+            name = " ".join((self._selected or "").split())
+        if not name:
+            return
+        self._menu_craft(char_id, f"strem:{name}")
 
     def _edit_flavour(self, char_id: int) -> None:
         from link_bridge.text_edit_dialog import ask_text
@@ -872,6 +932,9 @@ class SetsPanel(ttk.Frame):
 
     def _menu_craft(self, char_id: int, action_id: str) -> None:
         if char_id <= 0 or self._busy:
+            return
+        if action_id == "omni" and self._open_omni_ui is not None:
+            self._open_omni_ui(int(char_id))
             return
         if self._dm_craft is None:
             if action_id == "omni" and self._open_omni is not None:

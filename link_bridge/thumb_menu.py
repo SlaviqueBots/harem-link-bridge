@@ -28,6 +28,16 @@ def apply_silent_craft_item(item: dict[str, Any] | None, action_id: str) -> None
 
             existing = parse_set_names(item.get("set"))
             item["set"] = encode_set_names([*existing, raw])
+        elif op == "strem":
+            from link_bridge.set_names import encode_set_names, parse_set_names
+
+            wanted = (raw or "").strip().casefold()
+            kept = [
+                n
+                for n in parse_set_names(item.get("set"))
+                if n.casefold() != wanted
+            ]
+            item["set"] = encode_set_names(kept)
         return
     if aid == "rfl":
         item["flavour"] = ""
@@ -56,6 +66,7 @@ def popup_thumb_menu(
     current_set: str = "",
     on_add_to_set: Callable[[int, str], None] | None = None,
     on_new_set: Callable[[int], None] | None = None,
+    on_remove_from_set: Callable[[int, str], None] | None = None,
     can_edit_sets: bool = True,
 ) -> None:
     """Show nested bridge craft menu at the pointer."""
@@ -109,12 +120,17 @@ def popup_thumb_menu(
     note.add_command(label="Remove note", command=lambda: craft("rnt"))
     menu.add_cascade(label="Note", menu=note)
 
-    if can_edit_sets and (on_add_to_set is not None or on_new_set is not None):
+    if can_edit_sets and (
+        on_add_to_set is not None
+        or on_new_set is not None
+        or on_remove_from_set is not None
+    ):
         from link_bridge.set_names import parse_set_names
 
         set_m = tk.Menu(menu, tearoff=0)
         # ``current_set`` may be multi-set encoded (unit-separator joined).
-        member_keys = {n.casefold() for n in parse_set_names(current_set)}
+        member_names = parse_set_names(current_set)
+        member_keys = {n.casefold() for n in member_names}
         names = [str(x).strip() for x in (set_names or []) if str(x).strip()]
         for sname in names:
             label = f"Add to {sname}"
@@ -125,7 +141,15 @@ def popup_thumb_menu(
                     label=label,
                     command=lambda n=sname: on_add_to_set(int(char_id), n),
                 )
-        if names and on_new_set is not None:
+        if member_names and on_remove_from_set is not None:
+            if names:
+                set_m.add_separator()
+            for sname in member_names:
+                set_m.add_command(
+                    label=f"Remove from {sname}",
+                    command=lambda n=sname: on_remove_from_set(int(char_id), n),
+                )
+        if (names or member_names) and on_new_set is not None:
             set_m.add_separator()
         if on_new_set is not None:
             set_m.add_command(
@@ -152,6 +176,7 @@ def popup_thumb_menu(
     extra = tk.Menu(menu, tearoff=0)
     extra.add_command(label="Open Variant…", command=lambda: craft("vr"))
     extra.add_command(label="Title swap…", command=lambda: craft("tswap"))
+    extra.add_command(label="Open omni in bot DMs", command=lambda: craft("omni_dm"))
     menu.add_cascade(label="Extra crafts", menu=extra)
 
     status = tk.Menu(menu, tearoff=0)
@@ -164,7 +189,7 @@ def popup_thumb_menu(
     danger = tk.Menu(menu, tearoff=0)
     danger.add_command(label="Trash (market)…", command=lambda: craft("tr"))
     danger.add_command(label="Perma trash…", command=lambda: craft("ptr"))
-    menu.add_cascade(label="Danger", menu=danger)
+    menu.add_cascade(label="Trash", menu=danger)
 
     menu.add_separator()
     url = (post_url or "").strip()

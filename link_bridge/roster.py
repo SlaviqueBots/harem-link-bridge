@@ -1,4 +1,4 @@
-"""Paged roster: Undone / Done / Sets tabs + fill-viewport thumb grid."""
+"""Paged roster: Undone / Done / Flavoured / Unflavoured / Sets / Tamed / Market."""
 
 from __future__ import annotations
 
@@ -33,8 +33,9 @@ __all__ = ["RosterPanel", "DEFAULT_GEOMETRY", "PAGE_SIZE", "COLS", "ROWS"]
 
 OkCb = Callable[[dict[str, Any]], None]
 ErrCb = Callable[[BaseException], None]
-FetchPageFn = Callable[[int, str, int, str, OkCb, ErrCb], None]
+FetchPageFn = Callable[..., None]
 OpenOmniFn = Callable[[int, OkCb, ErrCb], None]
+OpenOmniUiFn = Callable[[int], None]
 PostGridFn = Callable[[int, OkCb, ErrCb], None]
 RegisterCupFn = Callable[[int, OkCb, ErrCb], None]
 DmCraftFn = Callable[[int, str, OkCb, ErrCb], None]
@@ -42,13 +43,32 @@ FocusPrefFn = Callable[[], bool]
 ListSetsFn = Callable[[str, OkCb, ErrCb], None]
 RenameSetFn = Callable[[str, str, OkCb, ErrCb], None]
 DeleteSetFn = Callable[[str, OkCb, ErrCb], None]
+PresentSetFn = Callable[[str, OkCb, ErrCb], None]
 TargetGetFn = Callable[[], str]
 TargetSetFn = Callable[[str], None]
 PreferOriginalFn = Callable[[], bool]
+LeftClickOmniGetFn = Callable[[], bool]
+LeftClickOmniSetFn = Callable[[bool], None]
+HideInAnySetGetFn = Callable[[], bool]
+HideInAnySetSetFn = Callable[[bool], None]
 TextGeoGetFn = Callable[[], str]
 TextGeoSetFn = Callable[[str], None]
 BrowseUsersFn = Callable[[str, OkCb, ErrCb], None]
 FetchTamedFn = Callable[[int, str, OkCb, ErrCb], None]
+FetchMarketFn = Callable[..., None]
+BuyMarketFn = Callable[[int, OkCb, ErrCb], None]
+StatusVarFn = Callable[[], tk.StringVar | None]
+
+_ROSTER_GRID_MODES = ("undone", "done", "flavoured", "unflavoured")
+_TAB_MODES = (
+    "undone",
+    "done",
+    "flavoured",
+    "unflavoured",
+    "sets",
+    "tamed",
+    "market",
+)
 
 
 def _item_ids(body: dict[str, Any]) -> tuple[int, ...]:
@@ -63,7 +83,7 @@ def _item_ids(body: dict[str, Any]) -> tuple[int, ...]:
 
 
 class RosterPanel(ttk.Frame):
-    """Undone | Done | Sets — sets sits with done/undone, not in the top bar."""
+    """Undone | Done | Flavoured | Unflavoured | Sets | Tamed | Market."""
 
     def __init__(
         self,
@@ -71,67 +91,90 @@ class RosterPanel(ttk.Frame):
         *,
         fetch_page: FetchPageFn,
         open_omni: OpenOmniFn,
+        open_omni_ui: OpenOmniUiFn | None = None,
         post_grid: PostGridFn | None = None,
         register_cup: RegisterCupFn | None = None,
         dm_craft: DmCraftFn | None = None,
         list_sets: ListSetsFn | None = None,
         rename_set: RenameSetFn | None = None,
         delete_set: DeleteSetFn | None = None,
+        present_set: PresentSetFn | None = None,
         fetch_tamed: FetchTamedFn | None = None,
+        fetch_market: FetchMarketFn | None = None,
+        buy_market: BuyMarketFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
         get_post_target: TargetGetFn | None = None,
         set_post_target: TargetSetFn | None = None,
         prefer_original_open: PreferOriginalFn | None = None,
+        get_left_click_omni: LeftClickOmniGetFn | None = None,
+        set_left_click_omni: LeftClickOmniSetFn | None = None,
+        get_hide_in_any_set: HideInAnySetGetFn | None = None,
+        set_hide_in_any_set: HideInAnySetSetFn | None = None,
+        status_var: tk.StringVar | None = None,
         get_text_edit_geometry: TextGeoGetFn | None = None,
         set_text_edit_geometry: TextGeoSetFn | None = None,
         fetch_browse_users: BrowseUsersFn | None = None,
         natural_thumbs: bool = False,
         preview_scale: float = 1.5,
+        scroll_speed: float = 3.0,
         on_log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
         self._fetch_page = fetch_page
         self._open_omni = open_omni
+        self._open_omni_ui = open_omni_ui
         self._post_grid = post_grid
         self._register_cup = register_cup
         self._dm_craft = dm_craft
         self._list_sets = list_sets
         self._rename_set = rename_set
         self._delete_set = delete_set
+        self._present_set = present_set
         self._fetch_tamed = fetch_tamed
+        self._fetch_market = fetch_market
+        self._buy_market = buy_market
         self._fetch_browse_users = fetch_browse_users
         self._should_focus = should_focus_telegram or (lambda: False)
         self._get_post_target = get_post_target or (lambda: "group")
         self._set_post_target = set_post_target
         self._prefer_original = prefer_original_open or (lambda: True)
+        self._get_left_click_omni = get_left_click_omni or (lambda: False)
+        self._set_left_click_omni = set_left_click_omni
+        self._get_hide_in_any_set = get_hide_in_any_set or (lambda: False)
+        self._set_hide_in_any_set = set_hide_in_any_set
+        self._status_var = status_var
         self._get_text_geo = get_text_edit_geometry or (lambda: "")
         self._set_text_geo = set_text_edit_geometry
         self._natural_thumbs = bool(natural_thumbs)
         self._preview_scale = max(0.5, min(2.0, float(preview_scale or 1.5)))
+        self._scroll_speed = max(0.25, min(6.0, float(scroll_speed or 3.0)))
         self._on_log = on_log or (lambda _s: None)
+        self._pending_media: dict[int, dict[str, Any]] = {}
         self._page = 0
         self._total = 0
         self._page_size = PAGE_SIZE
         self._query = ""
         self._done = 0
-        self._mode = "undone"  # undone | done | sets | tamed
+        self._mode = "undone"  # see _TAB_MODES
         self._scope = "own"  # own | user | all (from server)
         self._items: list[dict[str, Any]] = []
         self._photos: list[Any] = []
         self._thumb = 140
         self._busy = False
         self._gen = 0
-        self._gen_by_mode = {"undone": 0, "done": 0}
+        self._gen_by_mode = {m: 0 for m in _ROSTER_GRID_MODES}
         self._search_after: str | None = None
         self._resize_after: str | None = None
         self._gallery = None
         self._pane_fr: dict[str, ttk.Frame] = {}
-        self._pane_gallery: dict[str, Any] = {"undone": None, "done": None}
-        self._pane_photos: dict[str, list[Any]] = {"undone": [], "done": []}
-        self._pane_ids: dict[str, tuple[int, ...]] = {"undone": (), "done": ()}
-        self._pane_query: dict[str, str] = {"undone": "", "done": ""}
-        self._pane_page: dict[str, int] = {"undone": 0, "done": 0}
-        # Instant Done↔Undone switches: remember last roster_page bodies.
+        self._pane_gallery: dict[str, Any] = {m: None for m in _ROSTER_GRID_MODES}
+        self._pane_photos: dict[str, list[Any]] = {m: [] for m in _ROSTER_GRID_MODES}
+        self._pane_ids: dict[str, tuple[int, ...]] = {
+            m: () for m in _ROSTER_GRID_MODES
+        }
+        self._pane_query: dict[str, str] = {m: "" for m in _ROSTER_GRID_MODES}
+        self._pane_page: dict[str, int] = {m: 0 for m in _ROSTER_GRID_MODES}
+        # Instant tab switches: remember last roster_page bodies.
         self._page_cache: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
         self._max_page_cache = 8
         self._set_names: list[str] = []
@@ -139,20 +182,39 @@ class RosterPanel(ttk.Frame):
 
         self._tab_row = ttk.Frame(self)
         self._tab_row.pack(fill=tk.X)
-        self._tab_nb = ttk.Notebook(self._tab_row)
-        self._tab_nb.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self._tab_undone = ttk.Frame(self._tab_nb)
-        self._tab_done = ttk.Frame(self._tab_nb)
-        self._tab_sets = ttk.Frame(self._tab_nb)
-        self._tab_tamed = ttk.Frame(self._tab_nb)
-        self._tab_nb.add(self._tab_undone, text="Undone")
-        self._tab_nb.add(self._tab_done, text="Done")
-        self._tab_nb.add(self._tab_sets, text="Sets")
-        self._tab_nb.add(self._tab_tamed, text="Tamed")
-        self._tab_nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-        self._tab_nb.configure(height=1)
-        self._tab_nb.pack_propagate(False)
-        self.after_idle(self._shrink_tab_bar)
+        # Compact mode strip — no Notebook (empty pages stole a huge vertical gap).
+        self._mode_var = tk.StringVar(value="undone")
+        self._mode_btns: dict[str, ttk.Radiobutton] = {}
+        mode_bar = ttk.Frame(self._tab_row)
+        mode_bar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        _labels = (
+            ("undone", "Undone"),
+            ("done", "Done"),
+            ("flavoured", "Flavoured"),
+            ("unflavoured", "Unflavoured"),
+            ("sets", "Sets"),
+            ("tamed", "Tamed"),
+            ("market", "Market"),
+        )
+        for mode, label in _labels:
+            btn = ttk.Radiobutton(
+                mode_bar,
+                text=label,
+                value=mode,
+                variable=self._mode_var,
+                command=self._on_mode_changed,
+                style="Toolbutton",
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 2))
+            self._mode_btns[mode] = btn
+
+        # Status + members sit on the mode-tab line (max grid height).
+        if self._status_var is not None:
+            ttk.Label(
+                self._tab_row,
+                textvariable=self._status_var,
+                wraplength=280,
+            ).pack(side=tk.RIGHT, padx=(8, 4))
 
         self._roster_browse = None
         if self._fetch_browse_users is not None:
@@ -168,7 +230,7 @@ class RosterPanel(ttk.Frame):
                 on_pick=self._browse_pick_member,
                 on_log=self._on_log,
             )
-            self._roster_browse.pack(side=tk.RIGHT, padx=(10, 2), pady=(1, 0))
+            self._roster_browse.pack(side=tk.RIGHT, padx=(6, 2), pady=(1, 0))
 
         self._roster_body = ttk.Frame(self)
         self._roster_body.pack(fill=tk.BOTH, expand=True)
@@ -185,10 +247,12 @@ class RosterPanel(ttk.Frame):
                 fetch_page=fetch_page,
                 post_grid=post_grid,
                 open_omni=open_omni,
+                open_omni_ui=open_omni_ui,
                 register_cup=register_cup,
                 dm_craft=dm_craft,
                 rename_set=rename_set,
                 delete_set=delete_set,
+                present_set=present_set,
                 get_set_names=self._own_set_names,
                 on_set_names=self._remember_set_names,
                 should_focus_telegram=should_focus_telegram,
@@ -214,6 +278,7 @@ class RosterPanel(ttk.Frame):
                 fetch_tamed=fetch_tamed,
                 post_grid=post_grid,
                 open_omni=open_omni,
+                open_omni_ui=open_omni_ui,
                 register_cup=register_cup,
                 dm_craft=dm_craft,
                 should_focus_telegram=should_focus_telegram,
@@ -229,6 +294,21 @@ class RosterPanel(ttk.Frame):
                 on_log=on_log,
             )
             self._tamed_panel.pack(fill=tk.BOTH, expand=True)
+
+        self._market_body = ttk.Frame(self)
+        self._market_panel = None
+        if fetch_market is not None and buy_market is not None:
+            from link_bridge.market import MarketPanel
+
+            self._market_panel = MarketPanel(
+                self._market_body,
+                fetch_page=fetch_market,
+                buy_listing=buy_market,
+                prefer_original_open=self._prefer_original,
+                preview_scale=self._preview_scale,
+                on_log=on_log,
+            )
+            self._market_panel.pack(fill=tk.BOTH, expand=True)
 
         self._set_nav(False)
 
@@ -249,6 +329,8 @@ class RosterPanel(ttk.Frame):
             self._sets_panel.set_preview_scale(self._preview_scale)
         if self._tamed_panel is not None:
             self._tamed_panel.set_preview_scale(self._preview_scale)
+        if self._market_panel is not None:
+            self._market_panel.set_preview_scale(self._preview_scale)
         for g in self._pane_gallery.values():
             if g is not None:
                 try:
@@ -256,9 +338,168 @@ class RosterPanel(ttk.Frame):
                 except Exception:
                     pass
 
+    def set_scroll_speed(self, speed: float) -> None:
+        self._scroll_speed = max(0.25, min(6.0, float(speed or 3.0)))
+        for g in self._pane_gallery.values():
+            if g is not None and hasattr(g, "set_scroll_speed"):
+                try:
+                    g.set_scroll_speed(self._scroll_speed)
+                except Exception:
+                    pass
+
+    def remove_char_from_view(self, char_id: int) -> None:
+        """Pull a card out of the current page (e.g. Done while on Undone)."""
+        cid = int(char_id)
+        before = len(self._items)
+        self._items = [it for it in self._items if int(it.get("id") or 0) != cid]
+        if len(self._items) == before:
+            return
+        self._total = max(0, int(self._total) - 1)
+        g = self._pane_gallery.get(self._roster_mode_key())
+        if g is not None and hasattr(g, "remove_char") and g.remove_char(cid):
+            shown = len(self._items)
+            self.meta_var.set(
+                f"{self._mode}: {shown} on page · {self._total} total"
+            )
+            return
+        self._render_grid(reuse_bytes=True)
+
+    def note_char_media(self, char_id: int, media: dict[str, Any]) -> None:
+        """Remember preview fields from omni until the window closes."""
+        cid = int(char_id)
+        cur = dict(self._pending_media.get(cid) or {})
+        for key in ("preview_url", "image_url", "file_url", "post_url", "name"):
+            if key in media and media.get(key) is not None:
+                cur[key] = media.get(key)
+        self._pending_media[cid] = cur
+
+    def flush_omni_media(self) -> None:
+        """Apply pending omni preview updates to the visible grid (no reorder)."""
+        pending = dict(self._pending_media)
+        self._pending_media.clear()
+        if not pending:
+            return
+        for cid, media in pending.items():
+            self._apply_char_media(int(cid), media)
+        # Drop stale page-cache entries that still have old URLs.
+        stale_keys = []
+        for key, body in self._page_cache.items():
+            ids = set(_item_ids(body))
+            if ids & set(pending.keys()):
+                stale_keys.append(key)
+        for key in stale_keys:
+            self._page_cache.pop(key, None)
+
+    def _apply_char_media(self, char_id: int, media: dict[str, Any]) -> None:
+        cid = int(char_id)
+        preview = str(media.get("preview_url") or "").strip()
+        if not preview:
+            return
+        for it in self._items:
+            if int(it.get("id") or 0) != cid:
+                continue
+            it["preview_url"] = preview
+            for key in ("image_url", "file_url", "post_url", "name"):
+                if media.get(key) is not None:
+                    it[key] = media.get(key)
+            break
+        for mode, g in self._pane_gallery.items():
+            if g is None or not hasattr(g, "update_char_preview"):
+                continue
+            try:
+                g.update_char_preview(
+                    cid,
+                    preview_url=preview,
+                    post_url=str(media.get("post_url") or "") or None,
+                )
+            except Exception:
+                logger.debug("gallery preview update failed", exc_info=True)
+
+    def _sync_gallery_previews(self, items: list[dict[str, Any]]) -> None:
+        g = self._pane_gallery.get(self._roster_mode_key())
+        if g is None or not hasattr(g, "update_char_preview"):
+            return
+        for it in items:
+            cid = int(it.get("id") or 0)
+            url = str(it.get("preview_url") or "").strip()
+            if cid <= 0 or not url:
+                continue
+            try:
+                g.update_char_preview(
+                    cid,
+                    preview_url=url,
+                    post_url=str(it.get("post_url") or "") or None,
+                    item=it,
+                )
+            except Exception:
+                pass
+
     def _target_label(self) -> str:
         t = (self._get_post_target() or "group").strip().lower()
         return "Middle-click → DM" if t == "dm" else "Middle-click → Group"
+
+    def _lmb_omni_label(self) -> str:
+        return (
+            "LMB → Omni: on"
+            if self._get_left_click_omni()
+            else "LMB → Omni: off"
+        )
+
+    def _hide_in_any_set_label(self) -> str:
+        return (
+            "Hide in-set: on"
+            if self._get_hide_in_any_set()
+            else "Hide in-set: off"
+        )
+
+    def _visible_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self._get_hide_in_any_set():
+            return list(items)
+        return [
+            it
+            for it in items
+            if not str(it.get("set") or it.get("set_name") or "").strip()
+        ]
+
+    def _visible_ids(self, body: dict[str, Any]) -> tuple[int, ...]:
+        out: list[int] = []
+        for it in self._visible_items(list(body.get("items") or [])):
+            try:
+                out.append(int(it.get("id") or 0))
+            except Exception:
+                out.append(0)
+        return tuple(out)
+
+    def _toggle_left_click_omni(self) -> None:
+        cur = bool(self._get_left_click_omni())
+        nxt = not cur
+        if self._set_left_click_omni is not None:
+            self._set_left_click_omni(nxt)
+        self.sync_lmb_omni_button()
+
+    def sync_lmb_omni_button(self) -> None:
+        try:
+            self._lmb_omni_btn.configure(text=self._lmb_omni_label())
+        except Exception:
+            pass
+
+    def _toggle_hide_in_any_set(self) -> None:
+        cur = bool(self._get_hide_in_any_set())
+        nxt = not cur
+        if self._set_hide_in_any_set is not None:
+            self._set_hide_in_any_set(nxt)
+        self.sync_hide_in_any_set_button()
+        if self._mode in _ROSTER_GRID_MODES:
+            # Force gallery rebuild with the new filter.
+            mode = self._roster_mode_key()
+            self._pane_ids[mode] = ()
+            self.load_page(self._page)
+
+    def sync_hide_in_any_set_button(self) -> None:
+        try:
+            self._hide_in_set_btn.configure(text=self._hide_in_any_set_label())
+        except Exception:
+            pass
 
     def _toggle_post_target(self) -> None:
         cur = (self._get_post_target() or "group").strip().lower()
@@ -317,6 +558,12 @@ class RosterPanel(ttk.Frame):
             return
         self._menu_craft(char_id, f"stadd:{name}")
 
+    def _remove_from_set(self, char_id: int, set_name: str) -> None:
+        name = " ".join((set_name or "").split())
+        if not name:
+            return
+        self._menu_craft(char_id, f"strem:{name}")
+
     def _add_to_new_set(self, char_id: int) -> None:
         from link_bridge.text_edit_dialog import ask_set_name
 
@@ -332,7 +579,7 @@ class RosterPanel(ttk.Frame):
 
     def _build_roster_chrome(self, parent: ttk.Frame) -> None:
         search_row = ttk.Frame(parent)
-        search_row.pack(fill=tk.X, pady=(6, 0))
+        search_row.pack(fill=tk.X, pady=(2, 0))
         ttk.Label(search_row, text="Search").pack(side=tk.LEFT)
         self.search_var = tk.StringVar()
         self.search_entry = ttk.Entry(search_row, textvariable=self.search_var)
@@ -351,7 +598,7 @@ class RosterPanel(ttk.Frame):
         )
 
         bar = ttk.Frame(parent)
-        bar.pack(fill=tk.X, pady=(6, 0))
+        bar.pack(fill=tk.X, pady=(2, 0))
         self.prev_btn = ttk.Button(bar, text="◀ Prev", command=self.prev_page)
         self.prev_btn.pack(side=tk.LEFT)
         self.next_btn = ttk.Button(bar, text="Next ▶", command=self.next_page)
@@ -363,12 +610,22 @@ class RosterPanel(ttk.Frame):
             bar, text=self._target_label(), command=self._toggle_post_target
         )
         self._target_btn.pack(side=tk.LEFT, padx=(12, 0))
+        self._lmb_omni_btn = ttk.Button(
+            bar, text=self._lmb_omni_label(), command=self._toggle_left_click_omni
+        )
+        self._lmb_omni_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self._hide_in_set_btn = ttk.Button(
+            bar,
+            text=self._hide_in_any_set_label(),
+            command=self._toggle_hide_in_any_set,
+        )
+        self._hide_in_set_btn.pack(side=tk.LEFT, padx=(6, 0))
         self.meta_var = tk.StringVar(value="Connect to load roster.")
         ttk.Label(bar, textvariable=self.meta_var).pack(side=tk.LEFT, padx=(12, 0))
 
         self.grid_fr = ttk.Frame(parent)
-        self.grid_fr.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        for mode in ("undone", "done"):
+        self.grid_fr.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        for mode in _ROSTER_GRID_MODES:
             fr = ttk.Frame(self.grid_fr)
             self._pane_fr[mode] = fr
         self._pane_fr["undone"].pack(fill=tk.BOTH, expand=True)
@@ -396,6 +653,8 @@ class RosterPanel(ttk.Frame):
             if self._tamed_panel is not None:
                 self._tamed_panel._browse_pick_user(username)
             return
+        if self._mode == "market":
+            return
         self._browse_pick_roster(username)
 
     def _members_browse_kind(self) -> str:
@@ -403,7 +662,13 @@ class RosterPanel(ttk.Frame):
             return "sets"
         if self._mode == "tamed":
             return "tamed"
-        return "roster_done" if self._mode == "done" else "roster_undone"
+        if self._mode == "flavoured":
+            return "roster_flavoured"
+        if self._mode == "unflavoured":
+            return "roster_unflavoured"
+        if self._mode == "done":
+            return "roster_done"
+        return "roster_undone"
 
     def _sync_roster_browse_labels(self) -> None:
         panel = getattr(self, "_roster_browse", None)
@@ -413,10 +678,20 @@ class RosterPanel(ttk.Frame):
             panel.set_labels(title="sets", unit="sets")
         elif self._mode == "tamed":
             panel.set_labels(title="tamed", unit="tamed")
+        elif self._mode == "market":
+            panel.set_labels(title="market", unit="lots")
+        elif self._mode == "flavoured":
+            panel.set_labels(title="flavoured", unit="flavoured")
+        elif self._mode == "unflavoured":
+            panel.set_labels(title="unflavoured", unit="unflavoured")
         elif self._mode == "done":
             panel.set_labels(title="done", unit="done")
         else:
             panel.set_labels(title="undone", unit="undone")
+        if self._mode == "market":
+            panel.clear_cache()
+            panel.close()
+            return
         if getattr(panel, "_expanded", False):
             panel.reload()
         else:
@@ -424,7 +699,21 @@ class RosterPanel(ttk.Frame):
             panel.close()
 
     def _roster_mode_key(self) -> str:
-        return "done" if self._mode == "done" else "undone"
+        if self._mode in _ROSTER_GRID_MODES:
+            return self._mode
+        return "undone"
+
+    def _roster_fetch_kind(self) -> str:
+        if self._mode == "flavoured":
+            return "roster_flavoured"
+        if self._mode == "unflavoured":
+            return "roster_unflavoured"
+        return ""
+
+    def _roster_done_arg(self) -> int:
+        if self._mode in ("flavoured", "unflavoured"):
+            return -1
+        return 1 if self._mode == "done" else 0
 
     def _show_pane(self, mode: str) -> None:
         for m, fr in self._pane_fr.items():
@@ -447,21 +736,46 @@ class RosterPanel(ttk.Frame):
                 pass
 
     def _shrink_tab_bar(self) -> None:
-        try:
-            h = max(28, self._tab_nb.winfo_reqheight())
-            self._tab_nb.configure(height=h)
-        except Exception:
-            self._tab_nb.configure(height=32)
+        return
+
+    def _on_mode_changed(self) -> None:
+        mode = str(self._mode_var.get() or "undone")
+        if mode not in _TAB_MODES:
+            mode = "undone"
+            self._mode_var.set(mode)
+        self._mode = mode
+        if mode == "sets":
+            self._show_sets_mode()
+            self._sync_roster_browse_labels()
+            return
+        if mode == "tamed":
+            self._show_tamed_mode()
+            self._sync_roster_browse_labels()
+            return
+        if mode == "market":
+            self._show_market_mode()
+            self._sync_roster_browse_labels()
+            return
+        self._done = self._roster_done_arg()
+        self._show_roster_mode()
+        self._sync_roster_browse_labels()
+        self.load_page(0)
+
+    def _on_tab_changed(self, _event=None) -> None:
+        # Back-compat alias — mode strip uses _on_mode_changed.
+        self._on_mode_changed()
 
     def _show_roster_mode(self) -> None:
         self._sets_body.pack_forget()
         self._tamed_body.pack_forget()
+        self._market_body.pack_forget()
         if not self._roster_body.winfo_ismapped():
             self._roster_body.pack(fill=tk.BOTH, expand=True)
 
     def _show_sets_mode(self) -> None:
         self._roster_body.pack_forget()
         self._tamed_body.pack_forget()
+        self._market_body.pack_forget()
         if not self._sets_body.winfo_ismapped():
             self._sets_body.pack(fill=tk.BOTH, expand=True)
         if self._sets_panel is not None:
@@ -470,31 +784,20 @@ class RosterPanel(ttk.Frame):
     def _show_tamed_mode(self) -> None:
         self._roster_body.pack_forget()
         self._sets_body.pack_forget()
+        self._market_body.pack_forget()
         if not self._tamed_body.winfo_ismapped():
             self._tamed_body.pack(fill=tk.BOTH, expand=True)
         if self._tamed_panel is not None:
             self._tamed_panel.load_page(0)
 
-    def _on_tab_changed(self, _event=None) -> None:
-        try:
-            idx = int(self._tab_nb.index(self._tab_nb.select()))
-        except Exception:
-            return
-        if idx == 2:
-            self._mode = "sets"
-            self._show_sets_mode()
-            self._sync_roster_browse_labels()
-            return
-        if idx == 3:
-            self._mode = "tamed"
-            self._show_tamed_mode()
-            self._sync_roster_browse_labels()
-            return
-        self._mode = "done" if idx == 1 else "undone"
-        self._done = 1 if idx == 1 else 0
-        self._show_roster_mode()
-        self._sync_roster_browse_labels()
-        self.load_page(0)
+    def _show_market_mode(self) -> None:
+        self._roster_body.pack_forget()
+        self._sets_body.pack_forget()
+        self._tamed_body.pack_forget()
+        if not self._market_body.winfo_ismapped():
+            self._market_body.pack(fill=tk.BOTH, expand=True)
+        if self._market_panel is not None:
+            self._market_panel.load_page(0)
 
     def _on_grid_resize(self, _event=None) -> None:
         if self._resize_after is not None:
@@ -506,7 +809,7 @@ class RosterPanel(ttk.Frame):
 
     def _apply_resize(self) -> None:
         self._resize_after = None
-        if self._mode in ("sets", "tamed") or not self._items:
+        if self._mode not in _ROSTER_GRID_MODES or not self._items:
             return
         if self._natural_thumbs:
             return
@@ -564,7 +867,15 @@ class RosterPanel(ttk.Frame):
             if self._tamed_panel is not None:
                 self._tamed_panel.refresh()
             return
+        if self._mode == "market":
+            if self._market_panel is not None:
+                self._market_panel.refresh()
+            return
         self._query = (self.search_var.get() or "").strip()
+        # Bust page cache so Refresh actually picks up new preview URLs.
+        mode = self._roster_mode_key()
+        cache_key = (mode, (self._query or "").strip().lower(), int(self._page))
+        self._page_cache.pop(cache_key, None)
         self.load_page(self._page)
 
     def prev_page(self) -> None:
@@ -577,7 +888,7 @@ class RosterPanel(ttk.Frame):
             self.load_page(self._page + 1)
 
     def load_page(self, page: int = 0) -> None:
-        if self._mode in ("sets", "tamed"):
+        if self._mode not in _ROSTER_GRID_MODES:
             return
         mode = self._roster_mode_key()
         self._show_pane(mode)
@@ -587,13 +898,14 @@ class RosterPanel(ttk.Frame):
         self._gen = gen
         self._prefetch_set_names()
         q = self._query
-        done = int(self._done)
-        kind = "done" if done else "undone"
+        done = self._roster_done_arg()
+        kind = self._roster_fetch_kind()
+        label = mode
         hint = f" “{q}”" if q else ""
-        cache_key = (done, (q or "").strip().lower(), int(page))
+        cache_key = (mode, (q or "").strip().lower(), int(page))
         cached = self._page_cache.get(cache_key)
         if cached is not None:
-            ids = _item_ids(cached)
+            ids = self._visible_ids(cached)
             same_view = (
                 self._pane_gallery.get(mode) is not None
                 and self._pane_ids.get(mode) == ids
@@ -602,14 +914,14 @@ class RosterPanel(ttk.Frame):
             )
             if same_view:
                 # Keep live widgets — no blank flash.
-                self._items = list(cached.get("items") or [])
-                self._apply_roster_meta(cached, kind=kind, q=q)
+                self._items = self._visible_items(list(cached.get("items") or []))
+                self._apply_roster_meta(cached, kind=label, q=q)
                 self._busy = False
                 self._set_nav(True)
             else:
-                self._apply_roster_body(cached, gen, kind=kind, q=q, from_cache=True)
+                self._apply_roster_body(cached, gen, kind=label, q=q, from_cache=True)
         else:
-            self.meta_var.set(f"Loading {kind} page {page + 1}{hint}…")
+            self.meta_var.set(f"Loading {label} page {page + 1}{hint}…")
             self._set_nav(False)
 
         def on_ok(body: dict) -> None:
@@ -626,17 +938,19 @@ class RosterPanel(ttk.Frame):
             self._page_cache.move_to_end(cache_key)
             while len(self._page_cache) > self._max_page_cache:
                 self._page_cache.popitem(last=False)
-            ids = _item_ids(body)
+            ids = self._visible_ids(body)
             if (
                 self._pane_gallery.get(mode) is not None
                 and self._pane_ids.get(mode) == ids
                 and self._pane_query.get(mode) == q
                 and self._pane_page.get(mode) == int(body.get("page") or page)
             ):
-                self._apply_roster_meta(body, kind=kind, q=q)
+                self._items = self._visible_items(list(body.get("items") or []))
+                self._apply_roster_meta(body, kind=label, q=q)
+                self._sync_gallery_previews(self._items)
                 self._set_nav(True)
                 return
-            self._apply_roster_body(body, gen, kind=kind, q=q, from_cache=False)
+            self._apply_roster_body(body, gen, kind=label, q=q, from_cache=False)
 
         def on_err(exc: BaseException) -> None:
             self._busy = False
@@ -647,7 +961,7 @@ class RosterPanel(ttk.Frame):
             self._on_log(f"Roster error: {exc}")
             self._set_nav(True)
 
-        self._fetch_page(int(page), q, done, "", on_ok, on_err)
+        self._fetch_page(int(page), q, done, "", on_ok, on_err, kind=kind)
 
     def _apply_roster_meta(self, body: dict, *, kind: str, q: str) -> None:
         self._page = int(body.get("page") or 0)
@@ -661,9 +975,10 @@ class RosterPanel(ttk.Frame):
             scope_bit = " · all"
         elif self._scope == "user":
             scope_bit = " · @"
+        hide_bit = " · hide in-set" if self._get_hide_in_any_set() else ""
         self.meta_var.set(
             f"{kind.capitalize()}{scope_bit} · page {self._page + 1}/{pages} · "
-            f"{self._total} cards{q_bit}"
+            f"{self._total} cards{q_bit}{hide_bit}"
         )
 
     def _apply_roster_body(
@@ -679,7 +994,7 @@ class RosterPanel(ttk.Frame):
         if gen != self._gen_by_mode.get(mode, -1):
             return
         self._apply_roster_meta(body, kind=kind, q=q)
-        self._items = list(body.get("items") or [])
+        self._items = self._visible_items(list(body.get("items") or []))
         self._thumb = compute_thumb(
             max(1, self.grid_fr.winfo_width()),
             max(1, self.grid_fr.winfo_height()),
@@ -690,7 +1005,7 @@ class RosterPanel(ttk.Frame):
             self._busy = False
 
     def clear(self) -> None:
-        for mode in ("undone", "done"):
+        for mode in _ROSTER_GRID_MODES:
             self._gen_by_mode[mode] += 1
         self._gen = self._gen_by_mode[self._roster_mode_key()]
         self._items = []
@@ -729,7 +1044,7 @@ class RosterPanel(ttk.Frame):
             self._photos = self._pane_photos[mode]
 
     def _clear_all_panes(self) -> None:
-        for mode in ("undone", "done"):
+        for mode in _ROSTER_GRID_MODES:
             self._clear_pane(mode)
         # Legacy square-grid leftovers on the host frame.
         for child in list(self.grid_fr.winfo_children()):
@@ -756,6 +1071,7 @@ class RosterPanel(ttk.Frame):
                 bind_thumb=self._bind_thumb,
                 gen_fn=lambda m=mode: self._gen_by_mode[m],
                 preview_scale=self._preview_scale,
+                scroll_speed=self._scroll_speed,
             )
             self._pane_gallery[mode] = gallery
             self._gallery = gallery
@@ -882,7 +1198,7 @@ class RosterPanel(ttk.Frame):
         )
 
     def _bind_thumb(self, label: tk.Label, char_id: int, post_url: str) -> None:
-        label.bind("<Button-1>", lambda _e, x=char_id: self._click_open_image(x))
+        label.bind("<Button-1>", lambda _e, x=char_id: self._click_primary(x))
         label.bind("<Button-2>", lambda _e, x=char_id: self._click_post(x))
         label.bind(
             "<Button-3>",
@@ -971,6 +1287,7 @@ class RosterPanel(ttk.Frame):
             current_set=str(item.get("set") or ""),
             on_add_to_set=self._add_to_set,
             on_new_set=self._add_to_new_set,
+            on_remove_from_set=self._remove_from_set,
             can_edit_sets=bool(item.get("mine", True)),
         )
 
@@ -1026,6 +1343,12 @@ class RosterPanel(ttk.Frame):
     def _menu_craft(self, char_id: int, action_id: str) -> None:
         if char_id <= 0 or self._busy:
             return
+        if action_id == "omni" and self._open_omni_ui is not None:
+            self._open_omni_ui(int(char_id))
+            return
+        if action_id == "omni_dm":
+            # Telegram DM omnicraft (legacy), not the in-client panel.
+            action_id = "omni"
         # Prefer dedicated dm_craft; fall back to open_omni for plain omni.
         if self._dm_craft is None:
             if action_id == "omni":
@@ -1034,7 +1357,7 @@ class RosterPanel(ttk.Frame):
                 self.meta_var.set(f"Craft “{action_id}” needs a connected update")
             return
         self._busy = True
-        label = action_id if action_id != "omni" else "Omnicraft"
+        label = action_id if action_id != "omni" else "Omnicraft (DM)"
         self.meta_var.set(f"DM craft #{char_id}: {label}…")
 
         def on_ok(body: dict) -> None:
@@ -1051,6 +1374,12 @@ class RosterPanel(ttk.Frame):
                     apply_silent_craft_item(self._item_by_id(char_id), action_id)
                     if str(action_id).startswith("stadd:"):
                         self._note_set_used(str(action_id).split(":", 1)[1])
+                        if self._get_hide_in_any_set():
+                            self.remove_char_from_view(int(char_id))
+                    if action_id == "dn" and self._mode == "undone":
+                        self.remove_char_from_view(int(char_id))
+                    elif action_id == "ud" and self._mode == "done":
+                        self.remove_char_from_view(int(char_id))
                 elif self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram
@@ -1106,7 +1435,9 @@ class RosterPanel(ttk.Frame):
         self._register_cup(int(char_id), on_ok, on_err)
 
     def _click_primary(self, char_id: int) -> None:
-        # Legacy name — left click always opens the full image now.
+        if self._get_left_click_omni() and self._open_omni_ui is not None:
+            self._open_omni_ui(int(char_id))
+            return
         self._click_open_image(char_id)
 
     def _click_post(self, char_id: int) -> None:

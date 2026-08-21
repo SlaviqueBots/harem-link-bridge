@@ -192,16 +192,31 @@ def target_row_height(
 BindThumbFn = Callable[[tk.Label, int, str], None]
 
 # Shared wheel handler — dual Done/Undone panes must not steal bind_all from each other.
-_wheel_target: "JustifiedGallery | None" = None
+_wheel_target: "JustifiedGallery | PairGallery | None" = None
+
+# Smooth wheel: pixels per notch at scroll_speed=1.0, then eased toward rest.
+_WHEEL_PX_PER_NOTCH = 56
+_SMOOTH_FRAME_MS = 12
+_SMOOTH_EASE = 0.32  # fraction of remaining distance per frame
 
 
 def _gallery_wheel(event) -> None:
     g = _wheel_target
-    if g is None or g._canvas is None:
+    if g is None or getattr(g, "_canvas", None) is None:
         return
-    delta = int(-1 * (event.delta / 120)) if getattr(event, "delta", 0) else 0
-    if delta:
-        g._canvas.yview_scroll(delta, "units")
+    try:
+        if not g._canvas.winfo_exists():
+            return
+    except Exception:
+        return
+    delta = getattr(event, "delta", 0) or 0
+    if not delta:
+        return
+    # Windows: ±120 per notch. Keep sign: positive delta = scroll up = negative y.
+    notches = float(delta) / 120.0
+    speed = max(0.25, min(6.0, float(getattr(g, "_scroll_speed", 3.0) or 3.0)))
+    px = -notches * _WHEEL_PX_PER_NOTCH * speed
+    g._queue_smooth_scroll(px)
 
 
 # Debounce while thumbs trickle in — each layout can re-decode many tiles.
@@ -220,12 +235,16 @@ class JustifiedGallery:
         bind_thumb: BindThumbFn,
         gen_fn: Callable[[], int],
         preview_scale: float = 1.0,
+        scroll_speed: float = 3.0,
+        show_scrollbar: bool = True,
     ) -> None:
         self._parent = parent
         self._photos = photos
         self._bind_thumb = bind_thumb
         self._gen_fn = gen_fn
         self._preview_scale = max(0.5, min(2.0, float(preview_scale or 1.0)))
+        self._scroll_speed = max(0.25, min(6.0, float(scroll_speed or 3.0)))
+        self._show_scrollbar = bool(show_scrollbar)
         self._entries: list[dict[str, Any]] = []
         self._canvas: tk.Canvas | None = None
         self._inner: tk.Frame | None = None
@@ -237,15 +256,62 @@ class JustifiedGallery:
         self._last_sig: tuple[Any, ...] | None = None
         self._last_view_w = 0
         self._decode_queue: list[int] = []
+        self._dragging_scroll = False
+        self._layout_after_drag = False
+        self._scroll_gen = 0
+        self._smooth_remaining = 0.0
+        self._smooth_after: str | None = None
 
     def set_preview_scale(self, scale: float) -> None:
         self._preview_scale = max(0.5, min(2.0, float(scale or 1.0)))
         self._last_sig = None
         self._schedule_layout(immediate=True)
 
+    def set_scroll_speed(self, speed: float) -> None:
+        self._scroll_speed = max(0.25, min(6.0, float(speed or 3.0)))
+        # Pixel units so smooth easing can move by 1px steps.
+        if self._canvas is not None:
+            self._canvas.configure(yscrollincrement=1)
+
+    def _queue_smooth_scroll(self, px: float) -> None:
+        if self._canvas is None or abs(px) < 0.01:
+            return
+        self._smooth_remaining += float(px)
+        if self._smooth_after is None:
+            self._tick_smooth_scroll()
+
+    def _tick_smooth_scroll(self) -> None:
+        self._smooth_after = None
+        if self._canvas is None:
+            self._smooth_remaining = 0.0
+            return
+        rem = self._smooth_remaining
+        if abs(rem) < 0.8:
+            if abs(rem) >= 0.2:
+                self._canvas.yview_scroll(1 if rem > 0 else -1, "units")
+            self._smooth_remaining = 0.0
+            return
+        step = rem * _SMOOTH_EASE
+        if abs(step) < 1.0:
+            step = 1.0 if rem > 0 else -1.0
+        moved = int(round(step))
+        if moved == 0:
+            self._smooth_remaining = 0.0
+            return
+        self._smooth_remaining -= moved
+        self._canvas.yview_scroll(moved, "units")
+        self._smooth_after = self._canvas.after(_SMOOTH_FRAME_MS, self._tick_smooth_scroll)
+
     def destroy(self) -> None:
         global _wheel_target
         self._cancel_layout()
+        if self._smooth_after is not None and self._canvas is not None:
+            try:
+                self._canvas.after_cancel(self._smooth_after)
+            except Exception:
+                pass
+        self._smooth_after = None
+        self._smooth_remaining = 0.0
         if _wheel_target is self:
             _wheel_target = None
         self._wheel_bound = False
@@ -275,48 +341,85 @@ class JustifiedGallery:
                 pass
         self._layout_after = None
 
+    def _on_scrollbar(self, *args) -> None:
+        """Drag-scroll must not retrigger justified layout (that jumbles tiles)."""
+        self._scroll_gen += 1
+        gen = self._scroll_gen
+        self._dragging_scroll = True
+        self._smooth_remaining = 0.0
+        if self._canvas is not None:
+            self._canvas.yview(*args)
+
+            def _clear() -> None:
+                if gen != self._scroll_gen:
+                    return
+                self._dragging_scroll = False
+                if self._layout_after_drag:
+                    self._layout_after_drag = False
+                    self._schedule_layout()
+
+            self._canvas.after(180, _clear)
+
     def _ensure_chrome(self) -> tk.Frame:
         if self._canvas is not None and self._inner is not None:
             return self._inner
         parent = self._parent
         for child in list(parent.winfo_children()):
             child.destroy()
-        self._sb = ttk.Scrollbar(parent, orient=tk.VERTICAL)
         self._canvas = tk.Canvas(parent, highlightthickness=0, bd=0)
-        self._sb.configure(command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=self._sb.set)
-        self._sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._canvas.configure(yscrollincrement=1)
+        if self._show_scrollbar:
+            self._sb = ttk.Scrollbar(parent, orient=tk.VERTICAL)
+            self._sb.configure(command=self._on_scrollbar)
+            self._canvas.configure(yscrollcommand=self._sb.set)
+            self._sb.pack(side=tk.RIGHT, fill=tk.Y)
+            self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        else:
+            self._sb = None
+            self._canvas.pack(fill=tk.BOTH, expand=True)
         self._inner = tk.Frame(self._canvas)
         self._win = self._canvas.create_window((0, 0), window=self._inner, anchor=tk.NW)
 
         def _on_inner(_event=None) -> None:
-            if self._in_layout or self._canvas is None:
+            if self._in_layout or self._dragging_scroll or self._canvas is None:
                 return
             self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
         def _on_canvas(event) -> None:
             if self._in_layout or self._canvas is None or self._win is None:
                 return
-            self._canvas.itemconfigure(self._win, width=event.width)
+            width = int(getattr(event, "width", 0) or 0)
+            if width < 80:
+                return
+            self._canvas.itemconfigure(self._win, width=width)
+            if self._dragging_scroll:
+                return
             # Ignore tiny/noise width changes (scrollbar flicker).
-            if abs(int(event.width) - self._last_view_w) < 2 and self._last_sig:
+            if abs(width - self._last_view_w) < 8 and self._last_sig:
                 return
             self._schedule_layout()
 
         self._inner.bind("<Configure>", _on_inner)
         self._canvas.bind("<Configure>", _on_canvas)
+        self._canvas.bind("<Enter>", self._claim_wheel)
+        self._inner.bind("<Enter>", self._claim_wheel)
 
-        global _wheel_target
-        _wheel_target = self
         if not self._wheel_bound:
             self._canvas.bind_all("<MouseWheel>", _gallery_wheel)
             self._wheel_bound = True
         return self._inner
 
+    def _claim_wheel(self, _event=None) -> None:
+        global _wheel_target
+        _wheel_target = self
+
     def render(self, items: list[dict[str, Any]]) -> None:
         self.destroy()
         inner = self._ensure_chrome()
+        # Prefer the visible gallery under the pointer; do not steal wheel from
+        # another pane just because this one finished rendering.
+        if _wheel_target is None:
+            self._claim_wheel()
         gen = self._gen_fn()
         self._entries = []
         self._last_sig = None
@@ -345,6 +448,89 @@ class JustifiedGallery:
                 lbl.configure(text="?")
         # First paint after labels exist; aspects arrive async.
         self._schedule_layout(immediate=True)
+
+    def remove_char(self, char_id: int) -> bool:
+        """Drop one tile and reflow in place (no full page reload)."""
+        cid = int(char_id)
+        hit = None
+        for entry in self._entries:
+            if int(entry.get("char_id") or 0) == cid:
+                hit = entry
+                break
+        if hit is None:
+            return False
+        self._entries.remove(hit)
+        try:
+            hit["label"].destroy()
+        except Exception:
+            pass
+        old = hit.get("photo")
+        if old is not None:
+            try:
+                if old in self._photos:
+                    self._photos.remove(old)
+                release_photos([old])
+            except Exception:
+                pass
+        self._last_sig = None
+        if not self._entries:
+            self.destroy()
+            return True
+        self._schedule_layout(immediate=True)
+        return True
+
+    def update_char_preview(
+        self,
+        char_id: int,
+        *,
+        preview_url: str,
+        post_url: str | None = None,
+        item: dict[str, Any] | None = None,
+    ) -> bool:
+        """Swap one tile's preview URL and refetch (no reorder)."""
+        cid = int(char_id)
+        url = (preview_url or "").strip()
+        if not url:
+            return False
+        hit = None
+        for entry in self._entries:
+            if int(entry.get("char_id") or 0) == cid:
+                hit = entry
+                break
+        if hit is None:
+            return False
+        if (hit.get("url") or "") == url and hit.get("photo") is not None:
+            if item is not None:
+                hit["item"] = item
+            return True
+        old_photo = hit.get("photo")
+        if old_photo is not None:
+            try:
+                if old_photo in self._photos:
+                    self._photos.remove(old_photo)
+                release_photos([old_photo])
+            except Exception:
+                pass
+        hit["photo"] = None
+        hit["photo_size"] = None
+        hit["data"] = None
+        hit["url"] = url
+        if post_url is not None:
+            hit["post_url"] = str(post_url or "")
+        if item is not None:
+            hit["item"] = item
+        try:
+            hit["label"].configure(image="", text="…")
+            self._bind_thumb(
+                hit["label"],
+                cid,
+                str(hit.get("post_url") or ""),
+            )
+        except Exception:
+            pass
+        gen = self._gen_fn()
+        self._fetch(hit, gen)
+        return True
 
     def _apply_bytes(self, entry: dict[str, Any], data: bytes, gen: int) -> None:
         if gen != self._gen_fn():
@@ -435,6 +621,9 @@ class JustifiedGallery:
         self._fetch(entry, gen)
 
     def _schedule_layout(self, *, immediate: bool = False) -> None:
+        if self._dragging_scroll:
+            self._layout_after_drag = True
+            return
         self._cancel_layout()
         if self._canvas is None:
             return
@@ -443,6 +632,9 @@ class JustifiedGallery:
 
     def _layout(self) -> None:
         self._layout_after = None
+        if self._dragging_scroll:
+            self._layout_after_drag = True
+            return
         if self._canvas is None or self._inner is None or not self._entries:
             return
         view_w = max(80, self._canvas.winfo_width())
@@ -464,7 +656,7 @@ class JustifiedGallery:
                 target_h=target,
                 gap=GAP,
                 stretch_last=False,
-                reorder=True,
+                reorder=False,
             )
             need_h = max(total_h, view_h)
             if self._inner.winfo_width() != view_w or self._inner.winfo_height() != need_h:
@@ -575,12 +767,14 @@ class PairGallery:
         bind_pair: BindPairFn,
         gen_fn: Callable[[], int],
         preview_scale: float = 1.0,
+        scroll_speed: float = 3.0,
     ) -> None:
         self._parent = parent
         self._photos = photos
         self._bind_pair = bind_pair
         self._gen_fn = gen_fn
         self._preview_scale = max(0.5, min(2.0, float(preview_scale or 1.0)))
+        self._scroll_speed = max(0.25, min(6.0, float(scroll_speed or 3.0)))
         self._entries: list[dict[str, Any]] = []
         self._canvas: tk.Canvas | None = None
         self._inner: tk.Frame | None = None
@@ -592,15 +786,61 @@ class PairGallery:
         self._last_sig: tuple[Any, ...] | None = None
         self._last_view_w = 0
         self._decode_queue: list[int] = []
+        self._dragging_scroll = False
+        self._layout_after_drag = False
+        self._scroll_gen = 0
+        self._smooth_remaining = 0.0
+        self._smooth_after: str | None = None
 
     def set_preview_scale(self, scale: float) -> None:
         self._preview_scale = max(0.5, min(2.0, float(scale or 1.0)))
         self._last_sig = None
         self._schedule_layout(immediate=True)
 
+    def set_scroll_speed(self, speed: float) -> None:
+        self._scroll_speed = max(0.25, min(6.0, float(speed or 3.0)))
+        if self._canvas is not None:
+            self._canvas.configure(yscrollincrement=1)
+
+    def _queue_smooth_scroll(self, px: float) -> None:
+        if self._canvas is None or abs(px) < 0.01:
+            return
+        self._smooth_remaining += float(px)
+        if self._smooth_after is None:
+            self._tick_smooth_scroll()
+
+    def _tick_smooth_scroll(self) -> None:
+        self._smooth_after = None
+        if self._canvas is None:
+            self._smooth_remaining = 0.0
+            return
+        rem = self._smooth_remaining
+        if abs(rem) < 0.8:
+            if abs(rem) >= 0.2:
+                self._canvas.yview_scroll(1 if rem > 0 else -1, "units")
+            self._smooth_remaining = 0.0
+            return
+        step = rem * _SMOOTH_EASE
+        if abs(step) < 1.0:
+            step = 1.0 if rem > 0 else -1.0
+        moved = int(round(step))
+        if moved == 0:
+            self._smooth_remaining = 0.0
+            return
+        self._smooth_remaining -= moved
+        self._canvas.yview_scroll(moved, "units")
+        self._smooth_after = self._canvas.after(_SMOOTH_FRAME_MS, self._tick_smooth_scroll)
+
     def destroy(self) -> None:
         global _wheel_target
         self._cancel_layout()
+        if self._smooth_after is not None and self._canvas is not None:
+            try:
+                self._canvas.after_cancel(self._smooth_after)
+            except Exception:
+                pass
+        self._smooth_after = None
+        self._smooth_remaining = 0.0
         if _wheel_target is self:
             _wheel_target = None
         self._wheel_bound = False
@@ -630,6 +870,24 @@ class PairGallery:
                 pass
         self._layout_after = None
 
+    def _on_scrollbar(self, *args) -> None:
+        self._scroll_gen += 1
+        gen = self._scroll_gen
+        self._dragging_scroll = True
+        self._smooth_remaining = 0.0
+        if self._canvas is not None:
+            self._canvas.yview(*args)
+
+            def _clear() -> None:
+                if gen != self._scroll_gen:
+                    return
+                self._dragging_scroll = False
+                if self._layout_after_drag:
+                    self._layout_after_drag = False
+                    self._schedule_layout()
+
+            self._canvas.after(180, _clear)
+
     def _ensure_chrome(self) -> tk.Frame:
         if self._canvas is not None and self._inner is not None:
             return self._inner
@@ -638,7 +896,8 @@ class PairGallery:
             child.destroy()
         self._sb = ttk.Scrollbar(parent, orient=tk.VERTICAL)
         self._canvas = tk.Canvas(parent, highlightthickness=0, bd=0)
-        self._sb.configure(command=self._canvas.yview)
+        self._canvas.configure(yscrollincrement=1)
+        self._sb.configure(command=self._on_scrollbar)
         self._canvas.configure(yscrollcommand=self._sb.set)
         self._sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -646,31 +905,42 @@ class PairGallery:
         self._win = self._canvas.create_window((0, 0), window=self._inner, anchor=tk.NW)
 
         def _on_inner(_event=None) -> None:
-            if self._in_layout or self._canvas is None:
+            if self._in_layout or self._dragging_scroll or self._canvas is None:
                 return
             self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
         def _on_canvas(event) -> None:
             if self._in_layout or self._canvas is None or self._win is None:
                 return
-            self._canvas.itemconfigure(self._win, width=event.width)
-            if abs(int(event.width) - self._last_view_w) < 2 and self._last_sig:
+            width = int(getattr(event, "width", 0) or 0)
+            if width < 80:
+                return
+            self._canvas.itemconfigure(self._win, width=width)
+            if self._dragging_scroll:
+                return
+            if abs(width - self._last_view_w) < 8 and self._last_sig:
                 return
             self._schedule_layout()
 
         self._inner.bind("<Configure>", _on_inner)
         self._canvas.bind("<Configure>", _on_canvas)
+        self._canvas.bind("<Enter>", self._claim_wheel)
+        self._inner.bind("<Enter>", self._claim_wheel)
 
-        global _wheel_target
-        _wheel_target = self  # type: ignore[assignment]
         if not self._wheel_bound:
             self._canvas.bind_all("<MouseWheel>", _gallery_wheel)
             self._wheel_bound = True
         return self._inner
 
+    def _claim_wheel(self, _event=None) -> None:
+        global _wheel_target
+        _wheel_target = self  # type: ignore[assignment]
+
     def render(self, items: list[dict[str, Any]]) -> None:
         self.destroy()
         inner = self._ensure_chrome()
+        if _wheel_target is None:
+            self._claim_wheel()
         gen = self._gen_fn()
         self._entries = []
         self._last_sig = None
@@ -805,6 +1075,9 @@ class PairGallery:
         schedule_thumb_fetch(url, on_data=on_data, on_err=on_err)
 
     def _schedule_layout(self, *, immediate: bool = False) -> None:
+        if self._dragging_scroll:
+            self._layout_after_drag = True
+            return
         self._cancel_layout()
         if self._canvas is None:
             return
@@ -813,6 +1086,9 @@ class PairGallery:
 
     def _layout(self) -> None:
         self._layout_after = None
+        if self._dragging_scroll:
+            self._layout_after_drag = True
+            return
         if self._canvas is None or self._inner is None or not self._entries:
             return
         view_w = max(80, self._canvas.winfo_width())
@@ -838,7 +1114,7 @@ class PairGallery:
                 target_h=target,
                 gap=GAP,
                 stretch_last=False,
-                reorder=True,
+                reorder=False,
             )
             need_h = max(total_h, view_h)
             if self._inner.winfo_width() != view_w or self._inner.winfo_height() != need_h:

@@ -389,6 +389,7 @@ class TamedPanel(ttk.Frame):
         fetch_tamed: FetchTamedFn,
         post_grid: PostGridFn,
         open_omni: OpenOmniFn | None = None,
+        open_omni_ui: Callable[[int], None] | None = None,
         register_cup: RegisterCupFn | None = None,
         dm_craft: DmCraftFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
@@ -407,6 +408,7 @@ class TamedPanel(ttk.Frame):
         self._fetch_tamed = fetch_tamed
         self._post_grid = post_grid
         self._open_omni = open_omni
+        self._open_omni_ui = open_omni_ui
         self._register_cup = register_cup
         self._dm_craft = dm_craft
         self._should_focus = should_focus_telegram or (lambda: False)
@@ -746,6 +748,7 @@ class TamedPanel(ttk.Frame):
             current_set=str(item.get("set") or ""),
             on_add_to_set=self._add_to_set,
             on_new_set=self._add_to_new_set,
+            on_remove_from_set=self._remove_from_set,
             can_edit_sets=bool(item.get("mine", True)) and not self._whose,
         )
 
@@ -797,6 +800,12 @@ class TamedPanel(ttk.Frame):
             return
         self._menu_craft(char_id, f"stadd:{name}")
 
+    def _remove_from_set(self, char_id: int, set_name: str) -> None:
+        name = " ".join((set_name or "").split())
+        if not name:
+            return
+        self._menu_craft(char_id, f"strem:{name}")
+
     def _add_to_new_set(self, char_id: int) -> None:
         from link_bridge.text_edit_dialog import ask_set_name
 
@@ -831,6 +840,9 @@ class TamedPanel(ttk.Frame):
 
     def _menu_craft(self, char_id: int, action_id: str) -> None:
         if char_id <= 0 or self._busy:
+            return
+        if action_id == "omni" and self._open_omni_ui is not None:
+            self._open_omni_ui(int(char_id))
             return
         if self._dm_craft is None:
             if action_id == "omni" and self._open_omni is not None:
