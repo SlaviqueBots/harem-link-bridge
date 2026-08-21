@@ -1390,8 +1390,9 @@ class LinkBridgeApp(tk.Tk):
             ok = messagebox.askyesno(
                 "Harem Link Bridge",
                 f"Version {info.version} is available (you have {__version__}).\n\n"
-                "Download and install now?\n\n"
-                "The app will close. After that, start HaremLinkBridge.exe yourself "
+                "Download and install now? (~1–2 min on a normal connection)\n\n"
+                "Watch the status line for download progress. The app will close "
+                "when ready — then start HaremLinkBridge.exe yourself "
                 "(the install folder will open).",
             )
             if not ok:
@@ -1407,8 +1408,24 @@ class LinkBridgeApp(tk.Tk):
         from link_bridge.updater import run_update
         import sys
 
+        last_pct = [-1]
+
+        def _progress(done: int, total: int) -> None:
+            if total > 0:
+                pct = min(99, int(100 * done / total))
+                if pct == last_pct[0]:
+                    return
+                last_pct[0] = pct
+                mb = done / (1024 * 1024)
+                total_mb = total / (1024 * 1024)
+                msg = f"Downloading v{info.version}… {pct}% ({mb:.1f}/{total_mb:.1f} MB)"
+            else:
+                mb = done / (1024 * 1024)
+                msg = f"Downloading v{info.version}… {mb:.1f} MB"
+            self._ui(lambda m=msg: self.status_var.set(m))
+
         try:
-            run_update(self.cfg, info)
+            run_update(self.cfg, info, on_progress=_progress)
         except Exception as exc:
             self._ui(
                 lambda: (

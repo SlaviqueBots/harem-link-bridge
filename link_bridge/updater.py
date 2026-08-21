@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from link_bridge import __version__
 from link_bridge.config import BridgeConfig, app_dir
@@ -113,20 +114,45 @@ def _exe_path() -> Path:
     return app_dir() / EXE_NAME
 
 
-def download_update(info: UpdateInfo, dest: Path, *, timeout: float = 120.0) -> Path:
+def download_update(
+    info: UpdateInfo,
+    dest: Path,
+    *,
+    timeout: float = 60.0,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> Path:
+    """Download ``info.url`` to ``dest``.
+
+    ``timeout`` is the *per-read* socket timeout (seconds), not a total download
+    deadline — large builds can take several minutes on slow links.
+    ``on_progress(done_bytes, total_bytes)`` is optional (total may be 0).
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     if tmp.exists():
         tmp.unlink()
     req = urllib.request.Request(info.url, headers={"User-Agent": f"HaremLinkBridge/{__version__}"})
     h = hashlib.sha256()
+    done = 0
+    total = int(info.size or 0)
     with urllib.request.urlopen(req, timeout=timeout) as resp, tmp.open("wb") as out:
+        if not total:
+            try:
+                total = int(resp.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                total = 0
         while True:
             chunk = resp.read(1024 * 256)
             if not chunk:
                 break
             out.write(chunk)
             h.update(chunk)
+            done += len(chunk)
+            if on_progress is not None:
+                try:
+                    on_progress(done, total)
+                except Exception:
+                    pass
     digest = h.hexdigest()
     if info.sha256 and digest != info.sha256:
         tmp.unlink(missing_ok=True)
@@ -276,8 +302,13 @@ def apply_update_and_restart(new_exe: Path) -> None:
     )
 
 
-def run_update(cfg: BridgeConfig, info: UpdateInfo) -> Path:
+def run_update(
+    cfg: BridgeConfig,
+    info: UpdateInfo,
+    *,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> Path:
     dest = app_dir() / f"{EXE_NAME}.new"
-    path = download_update(info, dest)
+    path = download_update(info, dest, on_progress=on_progress)
     apply_update_and_restart(path)
     return path
