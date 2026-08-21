@@ -30,6 +30,11 @@ class LinkBridgeApp(tk.Tk):
         saved = (self.cfg.window_geometry or "").strip()
         self.geometry(saved if saved else DEFAULT_GEOMETRY)
 
+        from link_bridge.theme import apply_app_theme, normalize_theme
+
+        self.cfg.ui_theme = normalize_theme(self.cfg.ui_theme)
+        apply_app_theme(self, self.cfg.ui_theme)
+
         self._client: BridgeClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -55,6 +60,10 @@ class LinkBridgeApp(tk.Tk):
             pass
 
         self._build()
+        from link_bridge.theme import apply_app_theme, schedule_theme_refresh
+
+        apply_app_theme(self, self.cfg.ui_theme)
+        schedule_theme_refresh(self, self.cfg.ui_theme, delay_ms=200)
         self.protocol("WM_DELETE_WINDOW", self._on_close_to_tray)
         # Windows often drops early state('zoomed') while widgets pack — restore later.
         self.after_idle(self._restore_window_state)
@@ -235,7 +244,9 @@ class LinkBridgeApp(tk.Tk):
         ttk.Label(opts6, textvariable=self.preview_scale_label, width=5).pack(
             side=tk.LEFT
         )
-        ttk.Label(opts6, text="(0.5×–2×)").pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(
+            opts6, text="Default", width=8, command=self._reset_preview_scale
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         opts6b = ttk.Frame(root)
         opts6b.pack(fill=tk.X, **pad)
@@ -258,7 +269,9 @@ class LinkBridgeApp(tk.Tk):
         ttk.Label(opts6b, textvariable=self.scroll_speed_label, width=5).pack(
             side=tk.LEFT
         )
-        ttk.Label(opts6b, text="(wheel)").pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(
+            opts6b, text="Default", width=8, command=self._reset_scroll_speed
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         opts7 = ttk.Frame(root)
         opts7.pack(fill=tk.X, **pad)
@@ -271,6 +284,27 @@ class LinkBridgeApp(tk.Tk):
             variable=self.prefer_original_var,
             command=self._on_prefer_original_toggle,
         ).pack(side=tk.LEFT)
+
+        theme_row = ttk.Frame(root)
+        theme_row.pack(fill=tk.X, **pad)
+        ttk.Label(theme_row, text="Appearance").pack(side=tk.LEFT)
+        from link_bridge.theme import normalize_theme
+
+        self.theme_var = tk.StringVar(value=normalize_theme(self.cfg.ui_theme))
+        ttk.Radiobutton(
+            theme_row,
+            text="Dark",
+            value="dark",
+            variable=self.theme_var,
+            command=self._on_theme_change,
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Radiobutton(
+            theme_row,
+            text="Light",
+            value="light",
+            variable=self.theme_var,
+            command=self._on_theme_change,
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         ttk.Label(
             root,
@@ -384,11 +418,34 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
         self.cfg.prefer_original_open = bool(self.prefer_original_var.get())
         from link_bridge.config import _clamp_preview_scale, _clamp_scroll_speed
+        from link_bridge.theme import normalize_theme
 
         self.cfg.preview_scale = _clamp_preview_scale(self.preview_scale_var.get())
         self.cfg.scroll_speed = _clamp_scroll_speed(self.scroll_speed_var.get())
+        if hasattr(self, "theme_var"):
+            self.cfg.ui_theme = normalize_theme(self.theme_var.get())
         self.cfg.ensure_device_id()
         return True
+
+    def _on_theme_change(self) -> None:
+        from link_bridge.theme import apply_app_theme, normalize_theme, schedule_theme_refresh
+
+        mode = normalize_theme(self.theme_var.get())
+        self.cfg.ui_theme = mode
+        apply_app_theme(self, mode)
+        schedule_theme_refresh(self, mode, delay_ms=120)
+        host = getattr(self, "_omni_host", None)
+        if host is not None:
+            try:
+                if host.winfo_exists():
+                    host.apply_ui_theme(mode)
+            except Exception:
+                pass
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        self._append_log(f"Appearance → {mode}")
 
     def _on_preview_scale_slide(self, _value=None) -> None:
         from link_bridge.config import _clamp_preview_scale
@@ -401,6 +458,11 @@ class LinkBridgeApp(tk.Tk):
             except Exception:
                 pass
         self._preview_scale_after = self.after(180, self._commit_preview_scale)
+
+    def _reset_preview_scale(self) -> None:
+        self.preview_scale_var.set(1.5)
+        self._on_preview_scale_slide()
+        self._commit_preview_scale()
 
     def _commit_preview_scale(self) -> None:
         self._preview_scale_after = None
@@ -427,6 +489,11 @@ class LinkBridgeApp(tk.Tk):
             except Exception:
                 pass
         self._scroll_speed_after = self.after(180, self._commit_scroll_speed)
+
+    def _reset_scroll_speed(self) -> None:
+        self.scroll_speed_var.set(3.0)
+        self._on_scroll_speed_slide()
+        self._commit_scroll_speed()
 
     def _commit_scroll_speed(self) -> None:
         self._scroll_speed_after = None
@@ -857,6 +924,10 @@ class LinkBridgeApp(tk.Tk):
                 beep_get=lambda: bool(self.cfg.omni_beep),
                 beep_set=self._set_omni_beep,
                 prefer_original=lambda: bool(self.cfg.prefer_original_open),
+                full_image_get=lambda: bool(self.cfg.omni_full_image),
+                full_image_set=self._set_omni_full_image,
+                get_window_geo=lambda: str(self.cfg.omni_window_geometry or ""),
+                set_window_geo=self._save_omni_window_geometry,
                 get_text_geo=lambda: str(self.cfg.text_edit_geometry or ""),
                 set_text_geo=self._save_text_edit_geometry,
                 on_log=self._append_log,
@@ -928,6 +999,23 @@ class LinkBridgeApp(tk.Tk):
 
     def _set_omni_beep(self, flag: bool) -> None:
         self.cfg.omni_beep = bool(flag)
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _set_omni_full_image(self, flag: bool) -> None:
+        self.cfg.omni_full_image = bool(flag)
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _save_omni_window_geometry(self, geo: str) -> None:
+        text = (geo or "").strip()
+        if not text or text == (self.cfg.omni_window_geometry or ""):
+            return
+        self.cfg.omni_window_geometry = text
         try:
             save_config(self.cfg)
         except Exception:

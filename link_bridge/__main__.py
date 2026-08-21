@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dev",
         action="store_true",
-        help="Local DEV run: skip singleton + sync_config + silent auto-update",
+        help="Local DEV run: skip sync_config + silent auto-update (singleton still enforced)",
     )
     parser.add_argument(
         "--config",
@@ -76,20 +76,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.cli:
         return _run_cli()
 
-    if sys.platform == "win32" and not args.dev:
+    if sys.platform == "win32":
         from link_bridge.singleton import acquire_singleton
 
-        if not acquire_singleton():
+        if not acquire_singleton(dev=bool(args.dev)):
             logging.getLogger(__name__).error(
                 "Harem Link Bridge is already running — exit the tray copy first."
             )
             try:
                 import ctypes
 
+                msg = (
+                    "Harem Link Bridge DEV is already running.\n\n"
+                    "Use scripts\\relaunch_bridge_dev.py (or the VBS) to restart it."
+                    if args.dev
+                    else "Harem Link Bridge is already running (check the tray).\n\n"
+                    "Exit the existing copy before starting another."
+                )
                 ctypes.windll.user32.MessageBoxW(
                     0,
-                    "Harem Link Bridge is already running (check the tray).\n\n"
-                    "Exit the existing copy before starting another.",
+                    msg,
                     "Harem Link Bridge",
                     0x00000030,
                 )

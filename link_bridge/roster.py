@@ -1086,10 +1086,23 @@ class RosterPanel(ttk.Frame):
                 r, c = divmod(i, COLS)
                 cell = ttk.Frame(host)
                 cell.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
-                box = tk.Frame(cell, width=thumb, height=thumb)
+                box = tk.Frame(cell, width=thumb, height=thumb, bd=0, highlightthickness=0)
                 box.pack_propagate(False)
                 box.pack(expand=True)
-                thumb_lbl = tk.Label(box, text="…", relief=tk.GROOVE, cursor="hand2")
+                from link_bridge.theme import surface_for
+
+                surf = surface_for(self).get("canvas", "#1e1f22")
+                box.configure(bg=surf)
+                thumb_lbl = tk.Label(
+                    box,
+                    text="…",
+                    relief=tk.FLAT,
+                    cursor="hand2",
+                    bd=0,
+                    highlightthickness=0,
+                    bg=surf,
+                    fg=surface_for(self).get("muted", "#b5bac1"),
+                )
                 thumb_lbl.pack(fill=tk.BOTH, expand=True)
                 name = (item.get("name") or f"#{item.get('id')}")[:22]
                 owner = (item.get("owner") or "").strip()

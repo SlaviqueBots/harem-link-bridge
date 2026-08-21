@@ -73,6 +73,12 @@ class BridgeConfig:
     window_state: str = "normal"
     # Soft beep when an in-client omni craft lands a new image.
     omni_beep: bool = False
+    # Omni panel: load original/sample instead of the small preview (larger pane).
+    omni_full_image: bool = False
+    # Last Omnicraft host geometry, e.g. "720x520+80+60". Empty = center default.
+    omni_window_geometry: str = ""
+    # App chrome: "dark" (default) or "light" (classic bright look).
+    ui_theme: str = "dark"
     # Left-click opens in-client Omnicraft instead of the image viewer.
     left_click_omni: bool = False
     # Roster: hide cards that already belong to any set.
@@ -141,6 +147,9 @@ def load_config() -> BridgeConfig:
         window_geometry=str(raw.get("window_geometry") or ""),
         window_state=str(raw.get("window_state") or "normal"),
         omni_beep=bool(raw.get("omni_beep", False)),
+        omni_full_image=bool(raw.get("omni_full_image", False)),
+        omni_window_geometry=str(raw.get("omni_window_geometry") or ""),
+        ui_theme=_normalize_ui_theme(raw.get("ui_theme", "dark")),
         left_click_omni=bool(raw.get("left_click_omni", False)),
         hide_in_any_set=bool(raw.get("hide_in_any_set", False)),
         scroll_speed=_clamp_scroll_speed(raw.get("scroll_speed", 3.0)),
@@ -168,6 +177,11 @@ def _clamp_scroll_speed(raw: object) -> float:
 def _normalize_post_target(raw: object) -> str:
     text = str(raw or "group").strip().lower()
     return "dm" if text == "dm" else "group"
+
+
+def _normalize_ui_theme(raw: object) -> str:
+    text = str(raw or "dark").strip().lower()
+    return "light" if text == "light" else "dark"
 
 
 def save_config(cfg: BridgeConfig) -> Path:

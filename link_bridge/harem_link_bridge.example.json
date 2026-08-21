@@ -17,5 +17,6 @@
   "natural_thumbs": true,
   "preview_scale": 1.5,
   "window_geometry": "",
-  "window_state": "normal"
+  "window_state": "normal",
+  "ui_theme": "dark"
 }

@@ -10,14 +10,19 @@
 
 import os
 
+from PyInstaller.utils.hooks import collect_data_files
+
 spec_dir = os.path.dirname(os.path.abspath(SPEC))
 repo_root = os.path.dirname(spec_dir)
+
+# Bundled ffmpeg binary (imageio-ffmpeg) — no system install for adopters.
+_ffmpeg_datas = collect_data_files("imageio_ffmpeg")
 
 a = Analysis(
     [os.path.join(spec_dir, "__main__.py")],
     pathex=[repo_root],
     binaries=[],
-    datas=[],
+    datas=_ffmpeg_datas,
     hiddenimports=[
         "link_bridge",
         "link_bridge.config",
@@ -44,6 +49,8 @@ a = Analysis(
         "link_bridge.market",
         "link_bridge.omni",
         "link_bridge.pig_snout",
+        "link_bridge.video_still",
+        "imageio_ffmpeg",
         "websockets",
         "websockets.asyncio",
         "websockets.asyncio.client",

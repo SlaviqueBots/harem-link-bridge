@@ -9,14 +9,16 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _MUTEX_NAME = "Local\\HaremLinkBridgeSingleton"
+_MUTEX_DEV = "Local\\HaremLinkBridgeSingletonDev"
 _handle: Any = None
 
 
-def acquire_singleton() -> bool:
+def acquire_singleton(*, dev: bool = False) -> bool:
     """Return True if this process owns the singleton; False if another is running."""
     global _handle
     if sys.platform != "win32":
         return True
+    mutex = _MUTEX_DEV if dev else _MUTEX_NAME
     try:
         import ctypes
         from ctypes import wintypes
@@ -28,7 +30,7 @@ def acquire_singleton() -> bool:
             wintypes.LPCWSTR,
         ]
         kernel32.CreateMutexW.restype = wintypes.HANDLE
-        handle = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+        handle = kernel32.CreateMutexW(None, False, mutex)
         if not handle:
             logger.warning("CreateMutexW failed — continuing without singleton")
             return True

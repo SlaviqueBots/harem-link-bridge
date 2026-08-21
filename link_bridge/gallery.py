@@ -273,6 +273,29 @@ class JustifiedGallery:
         if self._canvas is not None:
             self._canvas.configure(yscrollincrement=1)
 
+    def _surface(self) -> dict[str, str]:
+        from link_bridge.theme import surface_for
+
+        return surface_for(self._parent)
+
+    def _gap(self) -> int:
+        from link_bridge.theme import gallery_gap
+
+        return gallery_gap(self._parent)
+
+    def _apply_surface(self) -> None:
+        c = self._surface()
+        bg = c.get("canvas") or c.get("bg") or "#1e1f22"
+        try:
+            if self._canvas is not None:
+                self._canvas.configure(
+                    bg=bg, highlightthickness=0, highlightbackground=bg, bd=0
+                )
+            if self._inner is not None:
+                self._inner.configure(bg=bg, highlightthickness=0, bd=0)
+        except Exception:
+            pass
+
     def _queue_smooth_scroll(self, px: float) -> None:
         if self._canvas is None or abs(px) < 0.01:
             return
@@ -368,6 +391,7 @@ class JustifiedGallery:
             child.destroy()
         self._canvas = tk.Canvas(parent, highlightthickness=0, bd=0)
         self._canvas.configure(yscrollincrement=1)
+        self._apply_surface()
         if self._show_scrollbar:
             self._sb = ttk.Scrollbar(parent, orient=tk.VERTICAL)
             self._sb.configure(command=self._on_scrollbar)
@@ -377,7 +401,8 @@ class JustifiedGallery:
         else:
             self._sb = None
             self._canvas.pack(fill=tk.BOTH, expand=True)
-        self._inner = tk.Frame(self._canvas)
+        self._inner = tk.Frame(self._canvas, bd=0, highlightthickness=0)
+        self._apply_surface()
         self._win = self._canvas.create_window((0, 0), window=self._inner, anchor=tk.NW)
 
         def _on_inner(_event=None) -> None:
@@ -427,7 +452,16 @@ class JustifiedGallery:
             cid = int(item.get("id") or 0)
             post_url = (item.get("post_url") or "").strip()
             url = (item.get("preview_url") or "").strip()
-            lbl = tk.Label(inner, text="…", relief=tk.FLAT, cursor="hand2", bd=0)
+            lbl = tk.Label(
+                inner,
+                text="…",
+                relief=tk.FLAT,
+                cursor="hand2",
+                bd=0,
+                highlightthickness=0,
+                bg=self._surface().get("canvas", "#1e1f22"),
+                fg=self._surface().get("muted", "#b5bac1"),
+            )
             self._bind_thumb(lbl, cid, post_url)
             entry: dict[str, Any] = {
                 "item": item,
@@ -654,7 +688,7 @@ class JustifiedGallery:
                 aspects,
                 view_w,
                 target_h=target,
-                gap=GAP,
+                gap=self._gap(),
                 stretch_last=False,
                 reorder=False,
             )
@@ -666,10 +700,15 @@ class JustifiedGallery:
 
             decode_left = _DECODE_BUDGET
             pending: list[int] = []
+            surf = self._surface().get("canvas", "#1e1f22")
             for box, src_i in zip(boxes, order):
                 entry = self._entries[src_i]
                 x, y, bw, bh = box
                 lbl: tk.Label = entry["label"]
+                try:
+                    lbl.configure(bg=surf)
+                except Exception:
+                    pass
                 data = entry.get("data")
                 prev_size = entry.get("photo_size")
                 size = (bw, bh)
@@ -802,6 +841,29 @@ class PairGallery:
         if self._canvas is not None:
             self._canvas.configure(yscrollincrement=1)
 
+    def _surface(self) -> dict[str, str]:
+        from link_bridge.theme import surface_for
+
+        return surface_for(self._parent)
+
+    def _gap(self) -> int:
+        from link_bridge.theme import gallery_gap
+
+        return gallery_gap(self._parent)
+
+    def _apply_surface(self) -> None:
+        c = self._surface()
+        bg = c.get("canvas") or c.get("bg") or "#1e1f22"
+        try:
+            if self._canvas is not None:
+                self._canvas.configure(
+                    bg=bg, highlightthickness=0, highlightbackground=bg, bd=0
+                )
+            if self._inner is not None:
+                self._inner.configure(bg=bg, highlightthickness=0, bd=0)
+        except Exception:
+            pass
+
     def _queue_smooth_scroll(self, px: float) -> None:
         if self._canvas is None or abs(px) < 0.01:
             return
@@ -897,11 +959,13 @@ class PairGallery:
         self._sb = ttk.Scrollbar(parent, orient=tk.VERTICAL)
         self._canvas = tk.Canvas(parent, highlightthickness=0, bd=0)
         self._canvas.configure(yscrollincrement=1)
+        self._apply_surface()
         self._sb.configure(command=self._on_scrollbar)
         self._canvas.configure(yscrollcommand=self._sb.set)
         self._sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._inner = tk.Frame(self._canvas)
+        self._inner = tk.Frame(self._canvas, bd=0, highlightthickness=0)
+        self._apply_surface()
         self._win = self._canvas.create_window((0, 0), window=self._inner, anchor=tk.NW)
 
         def _on_inner(_event=None) -> None:
@@ -944,6 +1008,8 @@ class PairGallery:
         gen = self._gen_fn()
         self._entries = []
         self._last_sig = None
+        surf = self._surface().get("canvas", "#1e1f22")
+        muted = self._surface().get("muted", "#b5bac1")
         for item in items:
             cid = int(item.get("id") or 0)
             post_url = (item.get("post_url") or "").strip()
@@ -955,12 +1021,26 @@ class PairGallery:
                 (item.get("after_preview_url") or "").strip()
                 or (item.get("preview_url") or "").strip()
             )
-            cell = tk.Frame(inner, bd=0, highlightthickness=0)
+            cell = tk.Frame(inner, bd=0, highlightthickness=0, bg=surf)
             before_lbl = tk.Label(
-                cell, text="…", relief=tk.FLAT, cursor="hand2", bd=0
+                cell,
+                text="…",
+                relief=tk.FLAT,
+                cursor="hand2",
+                bd=0,
+                highlightthickness=0,
+                bg=surf,
+                fg=muted,
             )
             after_lbl = tk.Label(
-                cell, text="…", relief=tk.FLAT, cursor="hand2", bd=0
+                cell,
+                text="…",
+                relief=tk.FLAT,
+                cursor="hand2",
+                bd=0,
+                highlightthickness=0,
+                bg=surf,
+                fg=muted,
             )
             self._bind_pair(before_lbl, after_lbl, cid, post_url)
             entry: dict[str, Any] = {
@@ -1112,7 +1192,7 @@ class PairGallery:
                 aspects,
                 view_w,
                 target_h=target,
-                gap=GAP,
+                gap=self._gap(),
                 stretch_last=False,
                 reorder=False,
             )
