@@ -68,6 +68,7 @@ def popup_thumb_menu(
     on_new_set: Callable[[int], None] | None = None,
     on_remove_from_set: Callable[[int, str], None] | None = None,
     can_edit_sets: bool = True,
+    can_cycle_name: bool = False,
 ) -> None:
     """Show nested bridge craft menu at the pointer."""
     menu = tk.Menu(widget, tearoff=0)
@@ -174,6 +175,11 @@ def popup_thumb_menu(
     menu.add_cascade(label="Copy", menu=copy_m)
 
     extra = tk.Menu(menu, tearoff=0)
+    if can_cycle_name:
+        extra.add_command(
+            label="Cycle character name…",
+            command=lambda: craft("cr"),
+        )
     extra.add_command(label="Open Variant…", command=lambda: craft("vr"))
     extra.add_command(label="Title swap…", command=lambda: craft("tswap"))
     extra.add_command(label="Open omni in bot DMs", command=lambda: craft("omni_dm"))

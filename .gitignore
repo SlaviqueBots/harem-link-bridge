@@ -9,3 +9,5 @@ __pycache__/
 *.pyc
 build/
 dist/
+*.log
+thumb_cache/

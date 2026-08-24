@@ -31,10 +31,27 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_UPDATE_PORT = 8766
 EXE_NAME = "HaremLinkBridge.exe"
+USERSCRIPT_NAME = "harem_bridge_send.user.js"
 MANIFEST_NAME = "version.json"
 UPDATE_BAT = "_update_bridge.bat"
 UPDATE_PS1 = "_update_bridge.ps1"
 CREATE_NO_WINDOW = 0x08000000
+
+# Sidecar files beside the exe that MUST survive an auto-update.
+PROTECTED_SIDECARS: tuple[str, ...] = (
+    "conjure_finder.env",
+    "harem_link_bridge.json",
+    USERSCRIPT_NAME,
+    "conjure_finder_findings.json",
+)
+
+
+@dataclass
+class SidecarFile:
+    filename: str
+    url: str
+    sha256: str = ""
+    size: int = 0
 
 
 @dataclass
@@ -43,6 +60,7 @@ class UpdateInfo:
     url: str
     sha256: str = ""
     size: int = 0
+    userscript: SidecarFile | None = None
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -73,6 +91,42 @@ def manifest_url(cfg: BridgeConfig) -> str:
     return f"http://{host}:{port}/{MANIFEST_NAME}"
 
 
+def _parse_userscript(raw: dict, *, manifest_url: str) -> SidecarFile | None:
+    block = raw.get("userscript")
+    if not isinstance(block, dict):
+        return None
+    filename = str(block.get("filename") or USERSCRIPT_NAME).strip() or USERSCRIPT_NAME
+    file_url = str(block.get("url") or "").strip()
+    if not file_url:
+        base = manifest_url.rsplit("/", 1)[0]
+        file_url = f"{base}/{filename}"
+    return SidecarFile(
+        filename=filename,
+        url=file_url,
+        sha256=str(block.get("sha256") or "").strip().lower(),
+        size=int(block.get("size") or 0),
+    )
+
+
+def _parse_manifest(raw: dict, *, manifest_url: str) -> UpdateInfo | None:
+    if not isinstance(raw, dict):
+        return None
+    version = str(raw.get("version") or "").strip()
+    if not version:
+        return None
+    file_url = str(raw.get("url") or "").strip()
+    if not file_url:
+        base = manifest_url.rsplit("/", 1)[0]
+        file_url = f"{base}/{raw.get('filename') or EXE_NAME}"
+    return UpdateInfo(
+        version=version,
+        url=file_url,
+        sha256=str(raw.get("sha256") or "").strip().lower(),
+        size=int(raw.get("size") or 0),
+        userscript=_parse_userscript(raw, manifest_url=manifest_url),
+    )
+
+
 def fetch_manifest(cfg: BridgeConfig, *, timeout: float = 8.0) -> UpdateInfo | None:
     url = manifest_url(cfg)
     try:
@@ -81,21 +135,7 @@ def fetch_manifest(cfg: BridgeConfig, *, timeout: float = 8.0) -> UpdateInfo | N
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         logger.info("update check failed (%s): %s", url, exc)
         return None
-    if not isinstance(raw, dict):
-        return None
-    version = str(raw.get("version") or "").strip()
-    if not version:
-        return None
-    file_url = str(raw.get("url") or "").strip()
-    if not file_url:
-        base = url.rsplit("/", 1)[0]
-        file_url = f"{base}/{raw.get('filename') or EXE_NAME}"
-    return UpdateInfo(
-        version=version,
-        url=file_url,
-        sha256=str(raw.get("sha256") or "").strip().lower(),
-        size=int(raw.get("size") or 0),
-    )
+    return _parse_manifest(raw, manifest_url=url)
 
 
 def check_for_update(cfg: BridgeConfig) -> UpdateInfo | None:
@@ -114,19 +154,137 @@ def _exe_path() -> Path:
     return app_dir() / EXE_NAME
 
 
+def userscript_path() -> Path:
+    return app_dir() / USERSCRIPT_NAME
+
+
+def download_sidecar(
+    item: SidecarFile,
+    dest: Path,
+    *,
+    timeout: float = 30.0,
+) -> Path:
+    """Download a small sidecar file (userscript) beside the exe."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    if tmp.exists():
+        tmp.unlink()
+    req = urllib.request.Request(
+        item.url, headers={"User-Agent": f"HaremLinkBridge/{__version__}"}
+    )
+    h = hashlib.sha256()
+    with urllib.request.urlopen(req, timeout=timeout) as resp, tmp.open("wb") as out:
+        while True:
+            chunk = resp.read(1024 * 64)
+            if not chunk:
+                break
+            out.write(chunk)
+            h.update(chunk)
+    digest = h.hexdigest()
+    if item.sha256 and digest != item.sha256:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"sha256 mismatch for {dest.name}: got {digest}, expected {item.sha256}")
+    if item.size and tmp.stat().st_size != int(item.size):
+        size = tmp.stat().st_size
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"size mismatch for {dest.name}: got {size}, expected {item.size}")
+    if dest.exists():
+        dest.unlink()
+    tmp.replace(dest)
+    return dest
+
+
+def download_userscript(info: UpdateInfo) -> Path | None:
+    """Write the browser userscript next to the exe when the manifest includes it."""
+    item = info.userscript
+    if item is None:
+        return None
+    dest = app_dir() / item.filename
+    path = download_sidecar(item, dest)
+    logger.info("userscript updated: %s", path)
+    return path
+
+
 def download_update(
     info: UpdateInfo,
     dest: Path,
+    cfg: BridgeConfig,
     *,
-    timeout: float = 60.0,
+    timeout: float = 30.0,
+    on_progress: Callable[[int, int], None] | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> Path:
+    """Download the exe beside the running build (Koara host first)."""
+    urls = ordered_download_urls(info, cfg)
+    last_exc: Exception | None = None
+    for i, url in enumerate(urls):
+        if on_status is not None:
+            try:
+                label = "Koara" if i == 0 else url.split("/")[2] if "/" in url else url
+                on_status(f"Connecting to {label}…")
+            except Exception:
+                pass
+        try:
+            attempt = UpdateInfo(
+                version=info.version,
+                url=url,
+                sha256=info.sha256,
+                size=info.size,
+            )
+            return _download_update_once(
+                attempt, dest, timeout=timeout, on_progress=on_progress
+            )
+        except Exception as exc:
+            last_exc = exc
+            logger.info("update download failed (%s): %s", url, exc)
+            if i + 1 < len(urls):
+                logger.info("retrying update from next URL")
+    assert last_exc is not None
+    raise last_exc
+
+
+def koara_exe_url(cfg: BridgeConfig | None = None, *, host: str = "", port: int = 0) -> str:
+    """Direct download URL on the bot update host (always published with the exe)."""
+    if cfg is not None:
+        host = (cfg.host or "").strip() or "108.165.174.158"
+        port = int(getattr(cfg, "update_port", 0) or DEFAULT_UPDATE_PORT)
+    else:
+        host = (host or "").strip() or "108.165.174.158"
+        port = int(port or DEFAULT_UPDATE_PORT)
+    return f"http://{host}:{port}/{EXE_NAME}"
+
+
+def ordered_download_urls(info: UpdateInfo, cfg: BridgeConfig) -> list[str]:
+    """Koara first — GitHub release assets are optional and often missing."""
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(url: str) -> None:
+        u = (url or "").strip()
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+
+    add(koara_exe_url(cfg))
+    add(info.url)
+    add(_koara_fallback_url(info.url))
+    return out
+
+
+def _koara_fallback_url(primary: str) -> str:
+    u = (primary or "").strip()
+    if "github.com" not in u.lower():
+        return ""
+    return f"http://108.165.174.158:{DEFAULT_UPDATE_PORT}/{EXE_NAME}"
+
+
+def _download_update_once(
+    info: UpdateInfo,
+    dest: Path,
+    *,
+    timeout: float = 30.0,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> Path:
-    """Download ``info.url`` to ``dest``.
-
-    ``timeout`` is the *per-read* socket timeout (seconds), not a total download
-    deadline — large builds can take several minutes on slow links.
-    ``on_progress(done_bytes, total_bytes)`` is optional (total may be 0).
-    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     if tmp.exists():
@@ -135,12 +293,31 @@ def download_update(
     h = hashlib.sha256()
     done = 0
     total = int(info.size or 0)
-    with urllib.request.urlopen(req, timeout=timeout) as resp, tmp.open("wb") as out:
+    if on_progress is not None:
+        try:
+            on_progress(0, total)
+        except Exception:
+            pass
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"HTTP {exc.code} from {info.url}") from exc
+    with resp, tmp.open("wb") as out:
         if not total:
             try:
                 total = int(resp.headers.get("Content-Length") or 0)
             except (TypeError, ValueError):
                 total = 0
+        if on_progress is not None and total:
+            try:
+                on_progress(0, total)
+            except Exception:
+                pass
+        expected_min = int(info.size or 0)
+        if expected_min > 5_000_000 and 0 < total < 1_000_000:
+            raise RuntimeError(
+                f"unexpected download size {total} bytes (expected ~{expected_min})"
+            )
         while True:
             chunk = resp.read(1024 * 256)
             if not chunk:
@@ -168,15 +345,23 @@ def download_update(
 
 
 def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
-    """PowerShell swap only — never relaunches the app."""
+    """PowerShell swap only — never relaunches the app.
+
+    Hard rule: only ``HaremLinkBridge.exe`` (+ ``.new`` / ``.bak``) and helper
+    scripts are touched. ``conjure_finder.env``, config JSON, and the userscript
+    beside the exe are never deleted.
+    """
     target = str(current)
     new_path = str(new_exe)
     bak = str(current) + ".bak"
     log_path = str(current.parent / "_update_fail.txt")
     note_path = str(current.parent / "_UPDATE_START_HERE.txt")
+    expected_leaf = EXE_NAME
 
     def q(p: str) -> str:
         return "'" + p.replace("'", "''") + "'"
+
+    protected_list = ", ".join(PROTECTED_SIDECARS)
 
     return "\r\n".join(
         [
@@ -187,10 +372,19 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             f"$bak = {q(bak)}",
             f"$log = {q(log_path)}",
             f"$note = {q(note_path)}",
+            f"$expectedLeaf = {q(expected_leaf)}",
             "function Write-Fail([string]$msg) {",
             "  Set-Content -LiteralPath $log -Value $msg -Encoding UTF8",
             "}",
             "try {",
+            "  if ([IO.Path]::GetFileName($target) -ne $expectedLeaf) {",
+            "    Write-Fail ('refusing_update_wrong_target:' + $target)",
+            "    exit 1",
+            "  }",
+            "  if (-not $new.EndsWith(($expectedLeaf + '.new'))) {",
+            "    Write-Fail ('refusing_update_wrong_new:' + $new)",
+            "    exit 1",
+            "  }",
             "  $deadline = (Get-Date).AddSeconds(120)",
             "  while ((Get-Date) -lt $deadline) {",
             "    $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue",
@@ -236,6 +430,7 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "  }",
             "  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }",
+            f"  # Protected sidecars (never deleted by this script): {protected_list}",
             "  Set-Content -LiteralPath $note -Value 'Update installed. Double-click HaremLinkBridge.exe to start.' -Encoding UTF8",
             "  try { Start-Process explorer.exe -ArgumentList ('/select,' + $target) } catch {}",
             "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
@@ -307,8 +502,22 @@ def run_update(
     info: UpdateInfo,
     *,
     on_progress: Callable[[int, int], None] | None = None,
+    on_status: Callable[[str], None] | None = None,
 ) -> Path:
     dest = app_dir() / f"{EXE_NAME}.new"
-    path = download_update(info, dest, on_progress=on_progress)
+    if dest.name != f"{EXE_NAME}.new":
+        raise RuntimeError(f"refusing update dest {dest!s}")
+    if on_status is not None:
+        try:
+            on_status("Fetching browser userscript…")
+        except Exception:
+            pass
+    try:
+        download_userscript(info)
+    except Exception as exc:
+        logger.warning("userscript download failed (continuing with exe update): %s", exc)
+    path = download_update(
+        info, dest, cfg, on_progress=on_progress, on_status=on_status
+    )
     apply_update_and_restart(path)
     return path

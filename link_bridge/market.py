@@ -259,19 +259,36 @@ class MarketPanel(ttk.Frame):
                 row=0, column=0, sticky="nsew"
             )
             return
-        for c in range(COLS):
-            self.grid_fr.columnconfigure(c, weight=1, uniform="mcol")
-        for r in range(ROWS):
-            self.grid_fr.rowconfigure(r, weight=1, uniform="mrow")
+        from link_bridge.theme import surface_for
+
+        c = surface_for(self)
+        surf = c.get("canvas", "#1e1f22")
+        bg = c.get("bg", surf)
+        fg = c.get("fg", "#f2f3f5")
+        muted = c.get("muted", "#b5bac1")
+        for cidx in range(COLS):
+            self.grid_fr.columnconfigure(cidx, weight=1, uniform="mcol")
+        for ridx in range(ROWS):
+            self.grid_fr.rowconfigure(ridx, weight=1, uniform="mrow")
         thumb = self._thumb
         for i, item in enumerate(items):
-            r, c = divmod(i, COLS)
+            r, ccol = divmod(i, COLS)
             cell = ttk.Frame(self.grid_fr)
-            cell.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
-            box = tk.Frame(cell, width=thumb, height=thumb)
+            cell.grid(row=r, column=ccol, sticky="nsew", padx=3, pady=3)
+            box = tk.Frame(cell, width=thumb, height=thumb, bd=0, highlightthickness=0)
             box.pack_propagate(False)
             box.pack(expand=True)
-            thumb_lbl = tk.Label(box, text="…", relief=tk.GROOVE, cursor="hand2")
+            box.configure(bg=surf)
+            thumb_lbl = tk.Label(
+                box,
+                text="…",
+                relief=tk.FLAT,
+                cursor="hand2",
+                bd=0,
+                highlightthickness=0,
+                bg=surf,
+                fg=muted,
+            )
             thumb_lbl.pack(fill=tk.BOTH, expand=True)
             cid = int(item.get("id") or 0)
             lid = int(item.get("listing_id") or 0)
@@ -292,28 +309,36 @@ class MarketPanel(ttk.Frame):
                     caption = f"{caption} · trash {grace}s"
                 else:
                     caption = f"{caption} · trash"
-            # Name on line 1; colored pig + price on line 2 (aligned).
-            from link_bridge.pig_snout import pig_photo
-
-            cap_fr = tk.Frame(cell)
-            cap_fr.pack()
-            tk.Label(
-                cap_fr,
+            ttk.Label(
+                cell,
                 text=f"#{cid} {name}",
                 wraplength=max(60, thumb),
                 justify=tk.CENTER,
-                font=("Segoe UI", 9),
             ).pack()
-            price_row = tk.Frame(cap_fr)
+            price_row = tk.Frame(cell, bd=0, highlightthickness=0, bg=bg)
             price_row.pack()
+            from link_bridge.pig_snout import pig_photo
+
             photo = pig_photo(price_row, size=14)
             if photo is not None:
-                sn = tk.Label(price_row, image=photo, bd=0)
+                sn = tk.Label(
+                    price_row,
+                    image=photo,
+                    bd=0,
+                    bg=bg,
+                    highlightthickness=0,
+                )
                 sn.image = photo  # type: ignore[attr-defined]
                 sn.pack(side=tk.LEFT, padx=(0, 2))
             else:
                 tk.Label(
-                    price_row, text="🐷 ", font=("Segoe UI Emoji", 9), bd=0
+                    price_row,
+                    text="🐷 ",
+                    font=("Segoe UI Emoji", 9),
+                    bd=0,
+                    bg=bg,
+                    fg=fg,
+                    highlightthickness=0,
                 ).pack(side=tk.LEFT)
             tk.Label(
                 price_row,
@@ -321,6 +346,10 @@ class MarketPanel(ttk.Frame):
                 wraplength=max(48, thumb - 18),
                 justify=tk.LEFT,
                 font=("Segoe UI", 9),
+                bd=0,
+                bg=bg,
+                fg=fg,
+                highlightthickness=0,
             ).pack(side=tk.LEFT)
             post_url = (item.get("post_url") or "").strip()
             self._bind_thumb(

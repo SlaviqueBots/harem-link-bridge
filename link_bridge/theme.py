@@ -340,16 +340,19 @@ def _tint_tree(widget: tk.Misc, c: dict[str, str]) -> None:
                 bg=c["canvas"], highlightthickness=0, bd=0, highlightbackground=c["canvas"]
             )
         elif cls == "Text":
-            widget.configure(  # type: ignore[call-arg]
-                bg=c["log_bg"],
-                fg=c["fg"],
-                insertbackground=c["fg"],
-                selectbackground=c["select"],
-                selectforeground=c["fg"],
-                highlightthickness=0,
-                bd=0,
-                relief=tk.FLAT,
-            )
+            if getattr(widget, "_bridge_preserve_text_style", False):
+                pass
+            else:
+                widget.configure(  # type: ignore[call-arg]
+                    bg=c["log_bg"],
+                    fg=c["fg"],
+                    insertbackground=c["fg"],
+                    selectbackground=c["select"],
+                    selectforeground=c["fg"],
+                    highlightthickness=0,
+                    bd=0,
+                    relief=tk.FLAT,
+                )
         elif cls == "Listbox":
             widget.configure(  # type: ignore[call-arg]
                 bg=c["entry"],
@@ -486,3 +489,56 @@ def bind_entry_clipboard(entry: ttk.Entry | tk.Entry) -> None:
         ("<Control-A>", _select_all),
     ):
         entry.bind(seq, handler)
+
+
+def bind_text_clipboard(text: tk.Text) -> None:
+    """Ensure Ctrl+X/C/V/A and text selection work in multiline editors."""
+
+    def _cut(_event=None):
+        try:
+            if text.tag_ranges(tk.SEL):
+                text.event_generate("<<Cut>>")
+        except Exception:
+            pass
+        return "break"
+
+    def _copy(_event=None):
+        try:
+            if text.tag_ranges(tk.SEL):
+                try:
+                    text.event_generate("<<Copy>>")
+                except Exception:
+                    chunk = text.get(tk.SEL_FIRST, tk.SEL_LAST)
+                    text.clipboard_clear()
+                    text.clipboard_append(chunk)
+        except Exception:
+            pass
+        return "break"
+
+    def _paste(_event=None):
+        try:
+            text.event_generate("<<Paste>>")
+        except Exception:
+            pass
+        return "break"
+
+    def _select_all(_event=None):
+        try:
+            text.tag_add(tk.SEL, "1.0", tk.END)
+            text.mark_set(tk.INSERT, tk.END)
+            text.see(tk.INSERT)
+        except Exception:
+            pass
+        return "break"
+
+    for seq, handler in (
+        ("<Control-x>", _cut),
+        ("<Control-X>", _cut),
+        ("<Control-c>", _copy),
+        ("<Control-C>", _copy),
+        ("<Control-v>", _paste),
+        ("<Control-V>", _paste),
+        ("<Control-a>", _select_all),
+        ("<Control-A>", _select_all),
+    ):
+        text.bind(seq, handler)

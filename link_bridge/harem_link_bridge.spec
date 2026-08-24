@@ -17,6 +17,8 @@ repo_root = os.path.dirname(spec_dir)
 
 # Bundled ffmpeg binary (imageio-ffmpeg) — no system install for adopters.
 _ffmpeg_datas = collect_data_files("imageio_ffmpeg")
+# CA roots for httpsx / Danbooru / Rule34 (avoids bare [Errno 2] on HTTPS).
+_certifi_datas = collect_data_files("certifi")
 
 _hidden = [
     "link_bridge",
@@ -54,8 +56,10 @@ _hidden = [
     "PIL",
     "httpx",
     "httpx._client",
+    "certifi",
     "dotenv",
     "dotenv.main",
+    "link_bridge.ssl_certs",
     # Conjure Finder tab (embedded) + bot helpers it imports.
     "bot.core.config",
     "bot.core.rate_limit",
@@ -78,7 +82,7 @@ a = Analysis(
     [os.path.join(spec_dir, "__main__.py")],
     pathex=[repo_root],
     binaries=[],
-    datas=_ffmpeg_datas,
+    datas=_ffmpeg_datas + _certifi_datas,
     hiddenimports=_hidden,
     hookspath=[],
     hooksconfig={},

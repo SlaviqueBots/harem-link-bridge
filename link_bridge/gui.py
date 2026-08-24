@@ -18,6 +18,52 @@ from link_bridge.ws_client import BridgeClient
 logger = logging.getLogger(__name__)
 
 
+class UpdateProgressDialog(tk.Toplevel):
+    """Small modal window with a real progress bar during exe download."""
+
+    def __init__(self, parent: tk.Misc, version: str) -> None:
+        super().__init__(parent)
+        self.title("Downloading update")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        frame = ttk.Frame(self, padding=16)
+        frame.pack()
+        ttk.Label(
+            frame,
+            text=f"Downloading Harem Link Bridge v{version}",
+            font=("", 10, "bold"),
+        ).pack(anchor=tk.W)
+        self.detail_var = tk.StringVar(value="Starting…")
+        ttk.Label(frame, textvariable=self.detail_var, wraplength=380).pack(
+            anchor=tk.W, pady=(8, 6)
+        )
+        self.bar = ttk.Progressbar(frame, mode="determinate", length=380, maximum=100)
+        self.bar.pack(fill=tk.X)
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+
+    def set_status(self, msg: str) -> None:
+        self.detail_var.set(msg)
+        self.update_idletasks()
+
+    def set_progress(self, done: int, total: int) -> None:
+        if total > 0:
+            pct = min(100, int(100 * done / total))
+            self.bar.configure(value=pct)
+            mb = done / (1024 * 1024)
+            total_mb = total / (1024 * 1024)
+            self.detail_var.set(f"{pct}% — {mb:.1f} / {total_mb:.1f} MB")
+        elif done > 0:
+            mb = done / (1024 * 1024)
+            self.detail_var.set(f"{mb:.1f} MB downloaded…")
+        else:
+            self.detail_var.set("Connecting…")
+        self.update_idletasks()
+
+
 class LinkBridgeApp(tk.Tk):
     def __init__(self, cfg: BridgeConfig | None = None) -> None:
         super().__init__()
@@ -51,6 +97,7 @@ class LinkBridgeApp(tk.Tk):
         self._themes_tab_index = None
         self._conjure_tab = None
         self._conjure = None
+        self._browser_hook = None
         self._geo_save_after: str | None = None
         self._geo_ready = False
         self._want_zoomed = (self.cfg.window_state or "normal").strip().lower() == "zoomed"
@@ -78,6 +125,7 @@ class LinkBridgeApp(tk.Tk):
             self.after(300, self.withdraw)
         if self.cfg.can_connect():
             self.after(400, self.start_bridge)
+        self.after(700, self._start_browser_hook)
         if self.cfg.pause_on_lock:
             self.after(500, self._sync_pause_on_lock_watcher)
         if self.cfg.check_updates:
@@ -1132,6 +1180,9 @@ class LinkBridgeApp(tk.Tk):
             return
 
         try:
+            from link_bridge.ssl_certs import ensure_ssl_certs
+
+            ensure_ssl_certs()
             set_app_root(app_dir())
             apply_env()
             apply_settings_file()
@@ -1153,6 +1204,7 @@ class LinkBridgeApp(tk.Tk):
         self._main_nb.add(tab, text="Conjure")
         self._conjure_tab = tab
         self._conjure = panel
+        panel.set_browser_result_handler(self._send_conjure_result_dm)
         try:
             from link_bridge.theme import normalize_theme, palette
 
@@ -1172,6 +1224,89 @@ class LinkBridgeApp(tk.Tk):
         except Exception:
             pass
         self._append_log("Conjure Finder tab ready.")
+
+    def _start_browser_hook(self) -> None:
+        if not bool(getattr(self.cfg, "browser_hook_enabled", True)):
+            return
+        if self._browser_hook is not None and self._browser_hook.running:
+            return
+        from link_bridge.browser_hook import BrowserHookServer
+
+        port = int(getattr(self.cfg, "browser_hook_port", 8767) or 8767)
+        self._browser_hook = BrowserHookServer(port, self._on_browser_post_url)
+        try:
+            self._browser_hook.start()
+            self._append_log(f"Browser hook listening on http://127.0.0.1:{port}/send")
+        except OSError as exc:
+            self._append_log(f"Browser hook failed on port {port}: {exc}")
+
+    def _on_browser_post_url(self, url: str, meta: dict | None = None) -> None:
+        text = (url or "").strip()
+        if not text:
+            return
+        meta = meta or {}
+        from_browser = str(meta.get("source") or "").strip().lower() == "browser"
+        action = str(meta.get("action") or "both").strip().lower()
+        if action not in ("checkres", "conjure", "both"):
+            action = "both"
+        do_checkres = action in ("checkres", "both")
+        do_conjure = action in ("conjure", "both")
+
+        def _go() -> None:
+            self._append_log(f"Browser [{action}] → {text[:88]}")
+            if do_conjure:
+                self._ensure_conjure_tab()
+                if self._conjure_tab is not None:
+                    try:
+                        self._main_nb.select(self._conjure_tab)
+                    except Exception:
+                        pass
+                if self._conjure is not None:
+                    try:
+                        self._conjure.process_incoming_url(
+                            text, from_browser=from_browser and do_conjure
+                        )
+                    except Exception as exc:
+                        self._append_log(f"Conjure Finder failed: {exc}")
+                else:
+                    self._append_log(
+                        "Conjure Finder skipped — open the Conjure tab or check the log "
+                        "for startup errors."
+                    )
+
+            if do_checkres:
+
+                def on_ok(body: dict) -> None:
+                    self._append_log(f"checkres: {body.get('detail') or 'ok'}")
+
+                def on_err(exc: BaseException) -> None:
+                    self._append_log(f"checkres failed: {exc}")
+
+                self._schedule_coro(
+                    lambda c: c.request_checkres_url(text),
+                    on_ok,
+                    on_err,
+                )
+
+        self._ui(_go)
+
+    def _send_conjure_result_dm(self, url: str, text: str, command: str = "") -> None:
+        body = (text or "").strip()
+        if not body:
+            return
+        cmd = (command or "").strip()
+
+        def on_ok(resp: dict) -> None:
+            self._append_log(f"conjure DM: {resp.get('detail') or 'ok'}")
+
+        def on_err(exc: BaseException) -> None:
+            self._append_log(f"conjure DM failed: {exc}")
+
+        self._schedule_coro(
+            lambda c: c.request_conjure_result_dm(url, body, command=cmd),
+            on_ok,
+            on_err,
+        )
 
     def _restore_window_state(self) -> None:
         if not self._want_zoomed:
@@ -1391,13 +1526,12 @@ class LinkBridgeApp(tk.Tk):
                 "Harem Link Bridge",
                 f"Version {info.version} is available (you have {__version__}).\n\n"
                 "Download and install now? (~1–2 min on a normal connection)\n\n"
-                "Watch the status line for download progress. The app will close "
+                "A progress window will show % and MB. The app will close "
                 "when ready — then start HaremLinkBridge.exe yourself "
                 "(the install folder will open).",
             )
             if not ok:
                 return
-            self.status_var.set(f"Downloading v{info.version}…")
             threading.Thread(
                 target=self._download_update_thread, args=(info,), daemon=True
             ).start()
@@ -1408,25 +1542,39 @@ class LinkBridgeApp(tk.Tk):
         from link_bridge.updater import run_update
         import sys
 
+        dialog_holder: list[UpdateProgressDialog | None] = [None]
+        ready = threading.Event()
+
+        def _open_dialog() -> None:
+            dialog_holder[0] = UpdateProgressDialog(self, info.version)
+            ready.set()
+
+        self._ui(_open_dialog)
+        ready.wait(timeout=10.0)
+        dlg = dialog_holder[0]
+
         last_pct = [-1]
 
         def _progress(done: int, total: int) -> None:
+            if dlg is None:
+                return
             if total > 0:
                 pct = min(99, int(100 * done / total))
-                if pct == last_pct[0]:
+                if pct == last_pct[0] and done > 0:
                     return
                 last_pct[0] = pct
-                mb = done / (1024 * 1024)
-                total_mb = total / (1024 * 1024)
-                msg = f"Downloading v{info.version}… {pct}% ({mb:.1f}/{total_mb:.1f} MB)"
-            else:
-                mb = done / (1024 * 1024)
-                msg = f"Downloading v{info.version}… {mb:.1f} MB"
-            self._ui(lambda m=msg: self.status_var.set(m))
+            self._ui(lambda d=done, t=total: dlg.set_progress(d, t))
+
+        def _status(msg: str) -> None:
+            if dlg is None:
+                return
+            self._ui(lambda m=msg: dlg.set_status(m))
 
         try:
-            run_update(self.cfg, info, on_progress=_progress)
+            run_update(self.cfg, info, on_progress=_progress, on_status=_status)
         except Exception as exc:
+            if dlg is not None:
+                self._ui(dlg.destroy)
             self._ui(
                 lambda: (
                     self.status_var.set(f"Update failed: {exc}"),
@@ -1435,6 +1583,8 @@ class LinkBridgeApp(tk.Tk):
                 )
             )
             return
+        if dlg is not None:
+            self._ui(dlg.destroy)
         if getattr(sys, "frozen", False):
             # Give the updater script a moment to attach before we tear down.
             def _done() -> None:
@@ -1499,6 +1649,12 @@ class LinkBridgeApp(tk.Tk):
             except Exception:
                 pass
             self._lock_watcher = None
+        if self._browser_hook is not None:
+            try:
+                self._browser_hook.stop()
+            except Exception:
+                pass
+            self._browser_hook = None
         self.stop_bridge()
         if self._tray is not None:
             try:

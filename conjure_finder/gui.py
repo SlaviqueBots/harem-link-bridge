@@ -8,10 +8,12 @@ import threading
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, simpledialog, ttk
+from collections.abc import Callable
 from typing import Any
 
 from conjure_finder import __version__
 from conjure_finder.bulk import BulkResult
+from conjure_finder.findings import FindingRecord, load_findings, prepend_finding
 from conjure_finder.urls import flatten_wishlist_urls, split_url_jobs
 
 
@@ -67,6 +69,16 @@ class ConjureFinderApp(ttk.Frame):
         self._worker: threading.Thread | None = None
         self._last_commands: list[str] = []
         self._last_bulk: BulkResult | None = None
+        self._findings: list[FindingRecord] = load_findings()
+        self._finding_photos: list[Any] = []
+        self._pending_incoming_url: str | None = None
+        self._pending_from_browser = False
+        self._browser_active = False
+        self._browser_source_url = ""
+        self._browser_output = ""
+        self._browser_result_cb: Callable[[str, str], None] | None = None
+        self._findings_bg = "#1e1f22"
+        self._findings_fg = "#f2f3f5"
         self._update_busy = False
         self._photo_refs: list[Any] = []
 
@@ -180,9 +192,45 @@ class ConjureFinderApp(ttk.Frame):
         self.result_host = ttk.Frame(root)
         self.result_host.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
 
-        self.result = tk.Text(self.result_host, height=18, wrap=tk.WORD, font=("Consolas", 10))
+        self.result = tk.Text(self.result_host, height=12, wrap=tk.WORD, font=("Consolas", 10))
         self.result.pack(fill=tk.BOTH, expand=True)
         self.result.configure(state=tk.DISABLED)
+
+        findings_head = ttk.Frame(root)
+        findings_head.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(findings_head, text="Recent findings").pack(side=tk.LEFT)
+        ttk.Button(
+            findings_head,
+            text="Clear log",
+            command=self._clear_findings,
+        ).pack(side=tk.RIGHT)
+
+        self.findings_outer = tk.Frame(root, height=108)
+        self.findings_outer.pack(fill=tk.X, pady=(4, 0))
+        self.findings_outer.pack_propagate(False)
+
+        self.findings_canvas = tk.Canvas(
+            self.findings_outer,
+            height=108,
+            highlightthickness=0,
+            bd=0,
+            relief=tk.FLAT,
+        )
+        self.findings_canvas.pack(fill=tk.BOTH, expand=True)
+        self.findings_inner = tk.Frame(self.findings_canvas, bd=0, highlightthickness=0)
+        self.findings_inner.bind(
+            "<Configure>",
+            lambda _e: self.findings_canvas.configure(
+                scrollregion=self.findings_canvas.bbox("all")
+            ),
+        )
+        self._findings_window = self.findings_canvas.create_window(
+            (0, 0), window=self.findings_inner, anchor="nw"
+        )
+        self.findings_canvas.bind("<Configure>", self._on_findings_canvas_configure)
+        self.findings_canvas.bind("<MouseWheel>", self._on_findings_wheel)
+        self.findings_inner.bind("<MouseWheel>", self._on_findings_wheel)
+        self.after_idle(self._render_findings)
 
         self.bulk_wrap = ttk.Frame(self.result_host)
         self.bulk_canvas = tk.Canvas(self.bulk_wrap, highlightthickness=0)
@@ -208,12 +256,13 @@ class ConjureFinderApp(ttk.Frame):
             self.url_text.yview_scroll(-1 if delta > 0 else 1, "units")
         return "break"
 
-    def _make_vscroll(self, parent: tk.Misc, command) -> tk.Misc:
-        """Themed vertical scrollbar (tk.Scrollbar in Bridge — ttk stays white on Win)."""
+    def _make_vscroll(self, parent: tk.Misc, command, *, horizontal: bool = False) -> tk.Misc:
+        """Themed scrollbar (tk.Scrollbar in Bridge — ttk stays white on Win)."""
+        orient = tk.HORIZONTAL if horizontal else tk.VERTICAL
         if self._embedded:
             return tk.Scrollbar(
                 parent,
-                orient=tk.VERTICAL,
+                orient=orient,
                 command=command,
                 bg="#2b2d31",
                 troughcolor="#1e1f22",
@@ -223,7 +272,7 @@ class ConjureFinderApp(ttk.Frame):
                 relief=tk.FLAT,
                 width=12,
             )
-        return ttk.Scrollbar(parent, orient=tk.VERTICAL, command=command)
+        return ttk.Scrollbar(parent, orient=orient, command=command)
 
     def _bridge_palette(self) -> dict[str, str] | None:
         try:
@@ -270,7 +319,21 @@ class ConjureFinderApp(ttk.Frame):
             self.bulk_canvas.configure(bg=canvas, highlightthickness=0)
         except Exception:
             pass
-        for sb in (getattr(self, "url_scroll", None), getattr(self, "bulk_scroll", None)):
+        try:
+            self.findings_canvas.configure(bg=canvas, highlightthickness=0)
+        except Exception:
+            pass
+        self._findings_bg = bg
+        self._findings_fg = fg
+        for widget in (self.findings_outer, self.findings_inner):
+            try:
+                widget.configure(bg=bg)
+            except Exception:
+                pass
+        for sb in (
+            getattr(self, "url_scroll", None),
+            getattr(self, "bulk_scroll", None),
+        ):
             if sb is None:
                 continue
             try:
@@ -428,6 +491,224 @@ class ConjureFinderApp(ttk.Frame):
                 link.pack()
                 link.bind("<Button-1>", lambda _e, u=cov.page_url: webbrowser.open(u))
             ttk.Label(cell, text=f"#{cov.post_id}", font=("Segoe UI", 8)).pack()
+
+    def _on_findings_canvas_configure(self, event: tk.Event) -> None:  # type: ignore[type-arg]
+        self.findings_canvas.itemconfigure(self._findings_window, height=event.height)
+
+    def _on_findings_wheel(self, event: tk.Event) -> str:  # type: ignore[type-arg]
+        delta = int(getattr(event, "delta", 0) or 0)
+        if delta:
+            self.findings_canvas.xview_scroll(-1 if delta > 0 else 1, "units")
+        return "break"
+
+    def set_browser_result_handler(
+        self, cb: Callable[[str, str, str], None] | None
+    ) -> None:
+        self._browser_result_cb = cb
+
+    def _finish_browser_session(self, text: str) -> None:
+        if not self._browser_active:
+            return
+        url = self._browser_source_url
+        self._browser_active = False
+        self._browser_source_url = ""
+        body = (text or "").strip()
+        command = ""
+        if self._last_commands:
+            command = str(self._last_commands[0] or "").strip()
+        if body and self._browser_result_cb is not None:
+            try:
+                self._browser_result_cb(url, body, command)
+            except TypeError:
+                # Back-compat if handler only accepts (url, text).
+                try:
+                    self._browser_result_cb(url, body)  # type: ignore[misc]
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    def _clear_findings(self) -> None:
+        self._findings = []
+        from conjure_finder.findings import save_findings
+
+        save_findings([])
+        self._render_findings()
+
+    def _record_finding(self, url: str, result: Any, *, summary: str) -> None:
+        entry = FindingRecord.from_result(url, result, summary=summary)
+        self._findings = prepend_finding(entry, self._findings)
+        self._render_findings()
+
+    def _render_findings(self) -> None:
+        for child in self.findings_inner.winfo_children():
+            child.destroy()
+        self._finding_photos.clear()
+        bg = self._findings_bg
+        fg = self._findings_fg
+        if not self._findings:
+            tk.Label(
+                self.findings_inner,
+                text="Findings appear here after a search (or browser → Bridge).",
+                font=("Segoe UI", 9),
+                bg=bg,
+                fg=fg,
+                anchor=tk.W,
+            ).pack(side=tk.LEFT, padx=6, pady=12)
+            return
+        for idx, entry in enumerate(self._findings):
+            cell = tk.Frame(self.findings_inner, bg=bg, padx=0, pady=2)
+            cell.pack(side=tk.LEFT, padx=(0, 8))
+            img = tk.Label(
+                cell,
+                text=f"#{entry.post_id or '?'}",
+                width=10,
+                height=5,
+                bg="#2b2d31",
+                fg=fg,
+                cursor="hand2",
+                relief=tk.FLAT,
+                bd=0,
+            )
+            img.pack()
+            img.bind("<Button-1>", lambda _e, i=idx: self._show_finding_detail(i))
+            cap = f"#{entry.post_id}" if entry.post_id else "post"
+            if entry.command:
+                cap += " · cmd"
+            tk.Label(cell, text=cap, font=("Segoe UI", 8), bg=bg, fg=fg).pack()
+            preview = (entry.preview_url or "").strip()
+            if preview:
+                self._load_finding_thumb(img, preview, idx)
+
+    def _load_finding_thumb(self, label: tk.Label, preview_url: str, index: int) -> None:
+        url = (preview_url or "").strip()
+        if not url:
+            return
+
+        def _apply_photo(photo: Any) -> None:
+            self._finding_photos.append(photo)
+            label.configure(image=photo, text="", width=0, height=0)
+
+        if self._embedded:
+            try:
+                from link_bridge.thumb_grid import decode_thumb, schedule_thumb_fetch
+
+                def on_data(data: bytes) -> None:
+                    def ui() -> None:
+                        try:
+                            _apply_photo(decode_thumb(data, 88))
+                        except Exception:
+                            pass
+
+                    self.after(0, ui)
+
+                schedule_thumb_fetch(url, on_data=on_data)
+                return
+            except Exception:
+                pass
+
+        def worker() -> None:
+            from conjure_finder.previews import make_photoimage
+
+            photo = make_photoimage(url, size=(88, 88))
+            if photo is not None:
+                self.after(0, lambda p=photo: _apply_photo(p))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_finding_detail(self, index: int) -> None:
+        if index < 0 or index >= len(self._findings):
+            return
+        entry = self._findings[index]
+        pal = self._bridge_palette() or {}
+        bg = pal.get("log_bg") or pal.get("entry") or pal.get("bg") or self._findings_bg
+        fg = pal.get("fg") or self._findings_fg
+        select = pal.get("select") or "#404249"
+        win = tk.Toplevel(self)
+        win.title(f"Finding — {entry.source} #{entry.post_id}")
+        win.transient(self.winfo_toplevel())
+        win.geometry("640x520")
+        win.configure(bg=bg)
+        head = tk.Frame(win, bg=bg, padx=10, pady=10)
+        head.pack(fill=tk.X)
+        tk.Label(
+            head,
+            text=entry.url or entry.page_url,
+            font=("Segoe UI", 9),
+            bg=bg,
+            fg=fg,
+            anchor=tk.W,
+            wraplength=600,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W)
+        body = tk.Text(
+            win,
+            wrap=tk.WORD,
+            font=("Consolas", 10),
+            bg=bg,
+            fg=fg,
+            insertbackground=fg,
+            selectbackground=select,
+            selectforeground=fg,
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 8))
+        body.insert("1.0", entry.summary or "(no details)")
+        body.configure(state=tk.DISABLED)
+        btn_row = tk.Frame(win, bg=bg, padx=10, pady=(0, 10))
+        btn_row.pack(fill=tk.X)
+
+        def _copy() -> None:
+            cmd = (entry.command or "").strip()
+            if not cmd:
+                messagebox.showinfo("Conjure Finder", "No command for this finding.")
+                return
+            win.clipboard_clear()
+            win.clipboard_append(cmd)
+            self.status_var.set("Copied command from finding.")
+
+        ttk.Button(btn_row, text="Copy command", command=_copy).pack(side=tk.RIGHT)
+        if entry.page_url:
+            ttk.Button(
+                btn_row,
+                text="Open post",
+                command=lambda u=entry.page_url: webbrowser.open(u),
+            ).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def process_incoming_url(self, url: str, *, from_browser: bool = False) -> None:
+        """Queue a single-post search (browser hook / Bridge)."""
+        text = (url or "").strip()
+        if not text:
+            return
+        if self._worker and self._worker.is_alive():
+            self._pending_incoming_url = text
+            self._pending_from_browser = bool(from_browser)
+            self.status_var.set("Browser URL queued — waiting for current search…")
+            return
+        self._browser_active = bool(from_browser)
+        self._browser_source_url = text if from_browser else ""
+        self._browser_output = ""
+        self.mode_var.set("find")
+        self._apply_mode()
+        self.url_text.delete("1.0", tk.END)
+        self.url_text.insert("1.0", text)
+        self.start_search()
+
+    def _maybe_run_pending_incoming(self) -> None:
+        pending = (self._pending_incoming_url or "").strip()
+        if not pending:
+            return
+        from_browser = bool(self._pending_from_browser)
+        self._pending_incoming_url = None
+        self._pending_from_browser = False
+        self.after(
+            120,
+            lambda u=pending, fb=from_browser: self.process_incoming_url(
+                u, from_browser=fb
+            ),
+        )
 
     def start_search(self) -> None:
         if self._worker and self._worker.is_alive():
@@ -639,6 +920,14 @@ class ConjureFinderApp(ttk.Frame):
                 block = _format_result(index, total, payload)
                 if payload.best:
                     self._last_commands.append(payload.best.command)
+                self.after(
+                    0,
+                    lambda u=label, p=payload, b=block: self._record_finding(
+                        u, p, summary=b.strip()
+                    ),
+                )
+            if self._browser_active:
+                self._browser_output += block + "\n"
             self.after(0, lambda b=block: self._append_result(b + "\n"))
 
         try:
@@ -659,11 +948,16 @@ class ConjureFinderApp(ttk.Frame):
         self.find_btn.configure(state=tk.NORMAL)
         self.cancel_btn.configure(state=tk.DISABLED)
         self.status_var.set("Error.")
+        err_block = f"Error:\n{message}\n"
+        if self._browser_active:
+            self._browser_output += err_block
         if self._is_bulk():
             ttk.Label(self.bulk_inner, text=f"Error:\n{message}").pack(anchor=tk.W)
         else:
-            self._append_result(f"Error:\n{message}\n")
+            self._append_result(err_block)
         messagebox.showerror("Conjure Finder", message)
+        self._finish_browser_session(self._browser_output)
+        self._maybe_run_pending_incoming()
 
     def _on_batch_done(self) -> None:
         self.find_btn.configure(state=tk.NORMAL)
@@ -675,6 +969,8 @@ class ConjureFinderApp(ttk.Frame):
             self.status_var.set("Cancelled.")
         else:
             self.status_var.set("Done.")
+        self._finish_browser_session(self._browser_output)
+        self._maybe_run_pending_incoming()
 
     def check_updates(self, *, silent: bool = False) -> None:
         if self._update_busy:

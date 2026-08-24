@@ -38,6 +38,12 @@ def set_app_root(path: Path | str) -> None:
         previews_mod.CACHE_DIR = ROOT / "conjure_finder_preview_cache"
     except Exception:
         pass
+    try:
+        import conjure_finder.findings as findings_mod
+
+        findings_mod.FINDINGS_PATH = ROOT / "conjure_finder_findings.json"
+    except Exception:
+        pass
 
 
 def ensure_path() -> None:
@@ -85,7 +91,28 @@ def load_env() -> None:
     os.environ.setdefault("BOT_TOKEN", os.environ.get("BOT_TOKEN") or "conjure-finder-unused")
 
 
+def _ensure_ssl_certs() -> None:
+    """Frozen Bridge / Finder: repair stale SSL_CERT_FILE (_MEI*) paths."""
+    try:
+        from link_bridge.ssl_certs import ensure_ssl_certs
+
+        ensure_ssl_certs()
+        return
+    except Exception:
+        pass
+    try:
+        import certifi
+
+        path = certifi.where()
+        if path and os.path.isfile(path):
+            os.environ["SSL_CERT_FILE"] = path
+            os.environ["REQUESTS_CA_BUNDLE"] = path
+    except Exception:
+        pass
+
+
 def apply_env() -> None:
     """Ensure import path + env files (handy for one-off scripts)."""
     ensure_path()
     load_env()
+    _ensure_ssl_certs()

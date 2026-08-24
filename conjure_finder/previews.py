@@ -11,7 +11,9 @@ import httpx
 from conjure_finder.bootstrap import ROOT
 
 CACHE_DIR = ROOT / "conjure_finder_preview_cache"
+FINDINGS_PATH = ROOT / "conjure_finder_findings.json"
 THUMB_SIZE = (110, 110)
+_USER_AGENT = "ConjureFinder/1.0 (+preview)"
 
 
 def _cache_path(url: str) -> Path:
@@ -33,7 +35,11 @@ def fetch_preview_bytes(url: str, *, timeout: float = 20.0) -> bytes | None:
         except OSError:
             pass
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": _USER_AGENT},
+        ) as client:
             r = client.get(url)
             if r.status_code != 200 or not r.content:
                 return None

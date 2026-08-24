@@ -1302,6 +1302,7 @@ class RosterPanel(ttk.Frame):
             on_new_set=self._add_to_new_set,
             on_remove_from_set=self._remove_from_set,
             can_edit_sets=bool(item.get("mine", True)),
+            can_cycle_name=bool(item.get("can_cycle_name")),
         )
 
     def _edit_flavour(self, char_id: int) -> None:

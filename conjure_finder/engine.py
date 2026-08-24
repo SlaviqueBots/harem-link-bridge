@@ -110,6 +110,8 @@ class FindResult:
     tags_on_post: int = 0
     elapsed_sec: float = 0.0
     post_ids: tuple[int, ...] = ()
+    preview_url: str = ""
+    page_url: str = ""
 
 
 def _progress(cb: ProgressCb | None, msg: str) -> None:
@@ -367,6 +369,13 @@ async def _httpx_get_retry(
             raise ValueError("Search cancelled.")
         try:
             return await client.get(path, timeout=timeout)
+        except FileNotFoundError as exc:
+            # Usually a broken SSL_CERT_FILE / missing certifi cacert.pem.
+            raise ValueError(
+                f"{label or path}: HTTPS CA certificate file missing "
+                f"({exc}). Update Harem Link Bridge, or clear SSL_CERT_FILE "
+                "in your system environment and retry."
+            ) from exc
         except (
             httpx.ConnectError,
             httpx.ConnectTimeout,
@@ -374,7 +383,16 @@ async def _httpx_get_retry(
             httpx.WriteTimeout,
             httpx.RemoteProtocolError,
             httpx.PoolTimeout,
+            OSError,
         ) as exc:
+            if isinstance(exc, FileNotFoundError) or (
+                getattr(exc, "errno", None) == 2
+                and "No such file" in str(exc)
+            ):
+                raise ValueError(
+                    f"{label or path}: HTTPS CA certificate file missing "
+                    f"({exc}). Update Harem Link Bridge and retry."
+                ) from exc
             last = exc
             if attempt >= attempts:
                 break
@@ -1815,6 +1833,8 @@ async def _search_targets(
         file_ext=targets[0].file_ext,
         warnings=warnings,
         tags_on_post=len(priced),
+        preview_url=targets[0].preview_url,
+        page_url=targets[0].page_url,
     )
 
     # Fast path: cheap single-tag conjure guarantee that covers ≥1 target.

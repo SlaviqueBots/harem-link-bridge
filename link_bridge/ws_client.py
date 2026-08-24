@@ -37,6 +37,7 @@ class BridgeClient:
         self._paused = bool(cfg.paused)
         self._task: asyncio.Task | None = None
         self._pending: dict[str, asyncio.Future] = {}
+        self._ping_task: asyncio.Task | None = None
         self.bot_username: str = ""
         self.themes_admin: bool = False
 
@@ -127,10 +128,21 @@ class BridgeClient:
                     "Connected." + (" (paused)" if self._paused else "")
                 )
                 self.on_message(msg)
-                async for message in ws:
-                    if self._stop.is_set():
-                        break
-                    await self._handle(message)
+                self._ping_task = asyncio.create_task(self._ping_loop(ws))
+                try:
+                    async for message in ws:
+                        if self._stop.is_set():
+                            break
+                        await self._handle(message)
+                finally:
+                    ping = self._ping_task
+                    self._ping_task = None
+                    if ping is not None:
+                        ping.cancel()
+                        try:
+                            await ping
+                        except asyncio.CancelledError:
+                            pass
         except Exception as exc:
             # Surface websocket close code 4003 ("replaced") clearly.
             name = type(exc).__name__
@@ -146,6 +158,20 @@ class BridgeClient:
         finally:
             self._ws = None
             self._fail_pending("disconnected")
+
+    async def _ping_loop(self, ws: Any) -> None:
+        """Application-level keepalive — catches half-open sessions sooner."""
+        while not self._stop.is_set():
+            try:
+                await asyncio.sleep(45.0)
+            except asyncio.CancelledError:
+                raise
+            if self._stop.is_set() or self._ws is not ws:
+                break
+            try:
+                await ws.send(json.dumps({"op": "ping"}))
+            except Exception:
+                break
 
     def _hello_payload(self) -> dict:
         if self.cfg.is_paired():
@@ -210,6 +236,10 @@ class BridgeClient:
             "omni_state_err",
             "omni_tap_ok",
             "omni_tap_err",
+            "checkres_url_ok",
+            "checkres_url_err",
+            "conjure_result_dm_ok",
+            "conjure_result_dm_err",
         ):
             if op.startswith("roster_page"):
                 key = "roster_page"
@@ -235,6 +265,10 @@ class BridgeClient:
             elif op.startswith("omni_tap"):
                 cid = int(body.get("char_id") or 0)
                 key = f"omni_tap:{cid}" if cid else "omni_tap"
+            elif op.startswith("checkres_url"):
+                key = "checkres_url"
+            elif op.startswith("conjure_result_dm"):
+                key = "conjure_result_dm"
             elif op.startswith("browse_users"):
                 kind = str(body.get("kind") or "roster").strip().lower() or "roster"
                 key = f"browse_users:{kind}"
@@ -385,6 +419,29 @@ class BridgeClient:
         return await self._request(
             "dm_craft",
             {"op": "dm_craft", "char_id": int(char_id), "craft": str(craft or "omni")},
+            timeout=timeout,
+        )
+
+    async def request_checkres_url(
+        self, url: str, *, timeout: float = 90.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "checkres_url",
+            {"op": "checkres_url", "url": str(url or "").strip()},
+            timeout=timeout,
+        )
+
+    async def request_conjure_result_dm(
+        self, url: str, text: str, *, command: str = "", timeout: float = 30.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "conjure_result_dm",
+            {
+                "op": "conjure_result_dm",
+                "url": str(url or "").strip(),
+                "text": str(text or ""),
+                "command": str(command or "").strip(),
+            },
             timeout=timeout,
         )
 

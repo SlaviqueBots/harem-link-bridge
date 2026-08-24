@@ -57,6 +57,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     _ensure_path()
     _load_dotenv_quiet()
+    try:
+        from link_bridge.ssl_certs import ensure_ssl_certs
+
+        ensure_ssl_certs()
+    except Exception:
+        logging.getLogger(__name__).debug("ssl_certs setup skipped", exc_info=True)
 
     if args.config is not None:
         from link_bridge.config import set_config_path

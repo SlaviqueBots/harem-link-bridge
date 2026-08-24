@@ -140,15 +140,22 @@ class NumberedPairBoard:
     def _ensure_chrome(self) -> tk.Frame:
         if self._canvas is not None and self._inner is not None:
             return self._inner
+        from link_bridge.theme import surface_for
+
+        c = surface_for(self._parent)
+        surf = c.get("canvas", "#1e1f22")
+        bg = c.get("bg", surf)
         for child in list(self._parent.winfo_children()):
             child.destroy()
         self._sb = ttk.Scrollbar(self._parent, orient=tk.VERTICAL)
-        self._canvas = tk.Canvas(self._parent, highlightthickness=0, bd=0)
+        self._canvas = tk.Canvas(
+            self._parent, highlightthickness=0, bd=0, bg=surf, highlightbackground=surf
+        )
         self._sb.configure(command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=self._sb.set)
         self._sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._inner = tk.Frame(self._canvas)
+        self._inner = tk.Frame(self._canvas, bg=bg, bd=0, highlightthickness=0)
         self._win = self._canvas.create_window((0, 0), window=self._inner, anchor=tk.NW)
 
         def _on_inner(_event=None) -> None:
@@ -182,6 +189,14 @@ class NumberedPairBoard:
         self.destroy()
         self._page_base = max(0, int(page_base))
         inner = self._ensure_chrome()
+        from link_bridge.theme import surface_for
+
+        c = surface_for(self._parent)
+        surf = c.get("canvas", "#1e1f22")
+        card_bg = c.get("bg2", surf)
+        card_edge = c.get("bg3", card_bg)
+        fg = c.get("fg", "#f2f3f5")
+        muted = c.get("muted", "#b5bac1")
         gen = self._gen_fn()
         self._entries = []
         for i, item in enumerate(items):
@@ -198,15 +213,24 @@ class NumberedPairBoard:
                 or (item.get("preview_url") or "").strip()
             )
 
-            card = tk.Frame(inner, bd=1, relief=tk.GROOVE, padx=4, pady=4)
+            card = tk.Frame(
+                inner,
+                bd=0,
+                relief=tk.FLAT,
+                padx=4,
+                pady=4,
+                bg=card_bg,
+                highlightthickness=1,
+                highlightbackground=card_edge,
+            )
             head = ttk.Label(card, text=f"#{num}  ·  {name}", anchor=tk.W)
             head.pack(fill=tk.X)
 
-            pics = tk.Frame(card)
+            pics = tk.Frame(card, bg=card_bg, bd=0, highlightthickness=0)
             pics.pack(fill=tk.X, pady=(4, 0))
 
-            before_col = tk.Frame(pics)
-            after_col = tk.Frame(pics)
+            before_col = tk.Frame(pics, bg=card_bg, bd=0, highlightthickness=0)
+            after_col = tk.Frame(pics, bg=card_bg, bd=0, highlightthickness=0)
             before_col.pack(side=tk.LEFT, padx=(0, PAIR_INNER_GAP // 2))
             after_col.pack(side=tk.LEFT, padx=(PAIR_INNER_GAP // 2, 0))
 
@@ -214,22 +238,34 @@ class NumberedPairBoard:
             ttk.Label(after_col, text="After", anchor=tk.CENTER).pack(fill=tk.X)
 
             before_lbl = tk.Label(
-                before_col, text="…", relief=tk.FLAT, cursor="hand2", bd=0, bg="#2a2a2a"
+                before_col,
+                text="…",
+                relief=tk.FLAT,
+                cursor="hand2",
+                bd=0,
+                highlightthickness=0,
+                bg=surf,
+                fg=muted,
             )
             after_lbl = tk.Label(
-                after_col, text="…", relief=tk.FLAT, cursor="hand2", bd=0, bg="#2a2a2a"
+                after_col,
+                text="…",
+                relief=tk.FLAT,
+                cursor="hand2",
+                bd=0,
+                highlightthickness=0,
+                bg=surf,
+                fg=muted,
             )
             before_lbl.pack()
             after_lbl.pack()
 
-            actions = ttk.Frame(card)
-            actions.pack(fill=tk.X, pady=(6, 0))
             post_btn = ttk.Button(
-                actions,
+                card,
                 text=self._post_label,
                 command=lambda c=cid: self._fire_post(c),
             )
-            post_btn.pack(side=tk.RIGHT)
+            post_btn.pack(anchor=tk.E, pady=(6, 0), padx=2)
 
             self._bind_pair(
                 before_lbl,
@@ -330,7 +366,7 @@ class NumberedPairBoard:
         tile = self._tile_size()
         # Pair card width: two square tiles + gap + padding + border.
         pair_w = tile * 2 + PAIR_INNER_GAP + 16
-        pair_h = HEADER_H + LABEL_H + tile + POST_BTN_H + 20
+        pair_h = HEADER_H + LABEL_H + tile + POST_BTN_H + 8
         cols = max(1, view_w // (pair_w + PAIR_PAD))
         # Stretch tile slightly if leftover space is large.
         usable = max(pair_w, (view_w - PAIR_PAD * (cols + 1)) // cols)
@@ -339,7 +375,7 @@ class NumberedPairBoard:
             extra = usable - (PAIR_INNER_GAP + 16)
             tile = max(tile, extra // 2)
             pair_w = tile * 2 + PAIR_INNER_GAP + 16
-            pair_h = HEADER_H + LABEL_H + tile + POST_BTN_H + 20
+            pair_h = HEADER_H + LABEL_H + tile + POST_BTN_H + 8
 
         for entry in self._entries:
             for side in ("before", "after"):
@@ -750,6 +786,7 @@ class TamedPanel(ttk.Frame):
             on_new_set=self._add_to_new_set,
             on_remove_from_set=self._remove_from_set,
             can_edit_sets=bool(item.get("mine", True)) and not self._whose,
+            can_cycle_name=bool(item.get("can_cycle_name")),
         )
 
     def _edit_flavour(self, char_id: int) -> None:

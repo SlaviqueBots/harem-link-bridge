@@ -50,6 +50,7 @@ def _restripe(box: tk.Text) -> None:
     for i in range(1, end_line + 1):
         tag = "odd" if (i % 2) else "even"
         box.tag_add(tag, f"{i}.0", f"{i}.0 lineend+1c")
+    _raise_selection(box)
 
 
 def _style_box(box: tk.Text) -> None:
@@ -67,9 +68,23 @@ def _style_box(box: tk.Text) -> None:
         font=_FONT,
         wrap=tk.WORD,
         width=88,
+        inactiveselectbackground=_SEL_BG,
     )
     box.tag_configure("even", background=_BG_EVEN, foreground=_FG, justify=tk.LEFT)
     box.tag_configure("odd", background=_BG_ODD, foreground=_FG, justify=tk.LEFT)
+    # Line stripes must stay *under* the selection highlight or it looks unselectable.
+    box.tag_configure("sel", background=_SEL_BG, foreground="#ffffff")
+    box.tag_lower("even")
+    box.tag_lower("odd")
+    box.tag_raise("sel")
+    box._bridge_preserve_text_style = True  # type: ignore[attr-defined]
+
+
+def _raise_selection(box: tk.Text) -> None:
+    try:
+        box.tag_raise("sel")
+    except Exception:
+        pass
 
 
 class _PoolEditor(tk.Frame):
@@ -81,16 +96,22 @@ class _PoolEditor(tk.Frame):
         mid = tk.Frame(self, bg=_SIDE_BG, highlightthickness=0)
         mid.place(relx=0.5, rely=0.0, anchor=tk.N, relheight=1.0, width=_TEXT_W)
 
-        self.text = tk.Text(mid, undo=True, width=88, height=24)
+        self.text = tk.Text(mid, undo=True, width=88, height=24, exportselection=True)
         _style_box(self.text)
+        from link_bridge.theme import bind_text_clipboard
+
+        bind_text_clipboard(self.text)
         # No scrollbar widget — wheel only (avoids the light Windows trough).
         self.text.pack(fill=tk.BOTH, expand=True)
-        self.text.bind("<KeyRelease>", lambda _e: _restripe(self.text))
+        self.text.bind("<Button-1>", lambda _e: self.text.focus_set(), add="+")
+        self.text.bind("<ButtonRelease-1>", lambda _e: _raise_selection(self.text), add="+")
+        self.text.bind("<<Selection>>", lambda _e: _raise_selection(self.text), add="+")
+        self.text.bind("<KeyRelease>", lambda _e: (_restripe(self.text), _raise_selection(self.text)))
         self.text.bind(
             "<<Paste>>",
             lambda _e: self.text.after_idle(lambda: _restripe(self.text)),
         )
-        self.text.bind("<MouseWheel>", self._on_wheel)
+        self.text.bind("<MouseWheel>", self._on_wheel, add="+")
 
         def _fit(_event=None) -> None:
             w = max(420, min(_TEXT_W, int(self.winfo_width() * 0.72) or _TEXT_W))
@@ -98,11 +119,11 @@ class _PoolEditor(tk.Frame):
 
         self.bind("<Configure>", _fit)
 
-    def _on_wheel(self, event) -> str:
+    def _on_wheel(self, event) -> str | None:
         delta = int(getattr(event, "delta", 0) or 0)
         if delta:
             self.text.yview_scroll(-1 if delta > 0 else 1, "units")
-        return "break"
+        return None
 
     def set_lines(self, lines: list[str]) -> None:
         self.text.delete("1.0", tk.END)

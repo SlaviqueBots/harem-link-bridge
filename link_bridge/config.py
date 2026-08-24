@@ -85,6 +85,9 @@ class BridgeConfig:
     hide_in_any_set: bool = False
     # Mouse-wheel scroll strength (0.25–6.0). Default 3.0 with smooth easing.
     scroll_speed: float = 3.0
+    # Local HTTP hook for browser userscript (127.0.0.1 only).
+    browser_hook_enabled: bool = True
+    browser_hook_port: int = 8767
 
     def ws_url(self) -> str:
         host = (self.host or "").strip() or "127.0.0.1"
@@ -153,6 +156,8 @@ def load_config() -> BridgeConfig:
         left_click_omni=bool(raw.get("left_click_omni", False)),
         hide_in_any_set=bool(raw.get("hide_in_any_set", False)),
         scroll_speed=_clamp_scroll_speed(raw.get("scroll_speed", 3.0)),
+        browser_hook_enabled=bool(raw.get("browser_hook_enabled", True)),
+        browser_hook_port=int(raw.get("browser_hook_port") or 8767),
     )
     cfg.ensure_device_id()
     return cfg
