@@ -141,7 +141,7 @@ def _disk_prune() -> None:
             pass
 
 
-def cache_get(url: str) -> bytes | None:
+def _ram_get(url: str) -> bytes | None:
     key = (url or "").strip()
     if not key:
         return None
@@ -150,6 +150,16 @@ def cache_get(url: str) -> bytes | None:
         if data is not None:
             _byte_cache.move_to_end(key)
             return data
+    return None
+
+
+def cache_get(url: str) -> bytes | None:
+    key = (url or "").strip()
+    if not key:
+        return None
+    ram = _ram_get(key)
+    if ram is not None:
+        return ram
     disk = _disk_get(key)
     if disk is not None:
         cache_put(key, disk)
@@ -332,9 +342,14 @@ def schedule_thumb_fetch(
             on_err(ValueError("empty url"))
         return
 
-    cached = cache_get(key)
-    if cached is not None:
-        _fetch_pool.submit(on_data, cached)
+    # RAM hits must not sit behind in-flight downloads — returning to a
+    # cached page should paint immediately on the UI thread.
+    ram = _ram_get(key)
+    if ram is not None:
+        try:
+            on_data(ram)
+        except Exception:
+            logger.debug("thumb ram-hit callback failed", exc_info=True)
         return
 
     with _cache_lock:

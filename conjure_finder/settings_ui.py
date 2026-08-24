@@ -26,12 +26,13 @@ def _link_label(parent: tk.Misc, url: str) -> ttk.Label:
 
 
 class SettingsDialog(tk.Toplevel):
-    def __init__(self, master: tk.Misc) -> None:
+    def __init__(self, master: tk.Misc, on_saved=None) -> None:
         super().__init__(master)
         self.title("Conjure Finder — Settings")
         self.transient(master)
         self.grab_set()
         self.resizable(False, False)
+        self._on_saved = on_saved
 
         self._vars: dict[str, tk.StringVar] = {}
         current = settings_mod.read_settings()
@@ -151,9 +152,15 @@ class SettingsDialog(tk.Toplevel):
             )
             return
         path = settings_mod.save_settings(values)
+        cb = self._on_saved
         messagebox.showinfo(
             "Settings",
-            f"Saved to:\n{path}\n\nNew searches will use these keys.",
+            f"Saved to:\n{path}\n\nNew searches will use these keys (no restart needed).",
             parent=self,
         )
         self.destroy()
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                pass

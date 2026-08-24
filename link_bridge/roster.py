@@ -177,6 +177,9 @@ class RosterPanel(ttk.Frame):
         # Instant tab switches: remember last roster_page bodies.
         self._page_cache: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
         self._max_page_cache = 8
+        # Keep last N rendered pages alive so Prev/Next is instant.
+        self._live_views: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+        self._max_live_views = 8
         self._set_names: list[str] = []
         self._set_names_loaded = False
 
@@ -332,6 +335,13 @@ class RosterPanel(ttk.Frame):
         if self._market_panel is not None:
             self._market_panel.set_preview_scale(self._preview_scale)
         for g in self._pane_gallery.values():
+            if g is not None:
+                try:
+                    g.set_preview_scale(self._preview_scale)
+                except Exception:
+                    pass
+        for view in self._live_views.values():
+            g = view.get("gallery")
             if g is not None:
                 try:
                     g.set_preview_scale(self._preview_scale)
@@ -1023,7 +1033,50 @@ class RosterPanel(ttk.Frame):
         if self._tamed_panel is not None:
             self._tamed_panel.clear()
 
+    def _view_key(
+        self, mode: str, ids: tuple[int, ...]
+    ) -> tuple[Any, ...]:
+        return (mode, (self._query or "").strip().lower(), int(self._page), ids)
+
+    def _hide_mode_views(self, mode: str) -> None:
+        for key, view in self._live_views.items():
+            if key[0] != mode:
+                continue
+            host = view.get("host")
+            if host is None:
+                continue
+            try:
+                host.pack_forget()
+            except Exception:
+                pass
+
+    def _destroy_live_view(self, view: dict[str, Any]) -> None:
+        g = view.get("gallery")
+        if g is not None:
+            try:
+                g.destroy()
+            except Exception:
+                pass
+        release_photos(view.get("photos") or [])
+        host = view.get("host")
+        if host is not None:
+            try:
+                host.destroy()
+            except Exception:
+                pass
+
+    def _evict_live_views(self) -> None:
+        while len(self._live_views) > self._max_live_views:
+            _key, view = self._live_views.popitem(last=False)
+            self._destroy_live_view(view)
+
+    def _drop_live_views(self, mode: str) -> None:
+        drop = [k for k in list(self._live_views) if k[0] == mode]
+        for key in drop:
+            self._destroy_live_view(self._live_views.pop(key))
+
     def _clear_pane(self, mode: str) -> None:
+        self._drop_live_views(mode)
         g = self._pane_gallery.get(mode)
         if g is not None:
             try:
@@ -1058,70 +1111,108 @@ class RosterPanel(ttk.Frame):
         del reuse_bytes
         mode = self._roster_mode_key()
         self._show_pane(mode)
-        self._clear_pane(mode)
-        host = self._pane_fr[mode]
-        photos = self._pane_photos[mode]
-        self._photos = photos
+        ids = tuple(int(it.get("id") or 0) for it in self._items)
         if self._natural_thumbs:
+            key = self._view_key(mode, ids)
+            self._hide_mode_views(mode)
+            hit = self._live_views.get(key)
+            if hit is not None:
+                self._live_views.move_to_end(key)
+                try:
+                    hit["host"].pack(fill=tk.BOTH, expand=True)
+                except Exception:
+                    pass
+                self._gallery = hit["gallery"]
+                self._photos = hit["photos"]
+                self._pane_gallery[mode] = hit["gallery"]
+                self._pane_photos[mode] = hit["photos"]
+                self._pane_ids[mode] = ids
+                self._pane_query[mode] = self._query
+                self._pane_page[mode] = self._page
+                g = hit["gallery"]
+                if g is not None and hasattr(g, "retry_missing"):
+                    try:
+                        g.retry_missing()
+                    except Exception:
+                        pass
+                return
+            host = ttk.Frame(self._pane_fr[mode])
+            host.pack(fill=tk.BOTH, expand=True)
+            photos: list[Any] = []
             from link_bridge.gallery import JustifiedGallery
 
             gallery = JustifiedGallery(
                 host,
                 photos=photos,
                 bind_thumb=self._bind_thumb,
-                gen_fn=lambda m=mode: self._gen_by_mode[m],
+                gen_fn=lambda: 0,
                 preview_scale=self._preview_scale,
                 scroll_speed=self._scroll_speed,
             )
+            self._live_views[key] = {
+                "host": host,
+                "gallery": gallery,
+                "photos": photos,
+            }
+            self._evict_live_views()
             self._pane_gallery[mode] = gallery
+            self._pane_photos[mode] = photos
             self._gallery = gallery
+            self._photos = photos
             gallery.render(self._items)
-        else:
-            for c in range(COLS):
-                host.columnconfigure(c, weight=1, uniform="col")
-            for r in range(ROWS):
-                host.rowconfigure(r, weight=1, uniform="row")
-            thumb = self._thumb
-            for i, item in enumerate(self._items):
-                r, c = divmod(i, COLS)
-                cell = ttk.Frame(host)
-                cell.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
-                box = tk.Frame(cell, width=thumb, height=thumb, bd=0, highlightthickness=0)
-                box.pack_propagate(False)
-                box.pack(expand=True)
-                from link_bridge.theme import surface_for
+            self._pane_ids[mode] = ids
+            self._pane_query[mode] = self._query
+            self._pane_page[mode] = self._page
+            return
+        self._clear_pane(mode)
+        host = self._pane_fr[mode]
+        photos = self._pane_photos[mode]
+        self._photos = photos
+        for c in range(COLS):
+            host.columnconfigure(c, weight=1, uniform="col")
+        for r in range(ROWS):
+            host.rowconfigure(r, weight=1, uniform="row")
+        thumb = self._thumb
+        for i, item in enumerate(self._items):
+            r, c = divmod(i, COLS)
+            cell = ttk.Frame(host)
+            cell.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
+            box = tk.Frame(cell, width=thumb, height=thumb, bd=0, highlightthickness=0)
+            box.pack_propagate(False)
+            box.pack(expand=True)
+            from link_bridge.theme import surface_for
 
-                surf = surface_for(self).get("canvas", "#1e1f22")
-                box.configure(bg=surf)
-                thumb_lbl = tk.Label(
-                    box,
-                    text="…",
-                    relief=tk.FLAT,
-                    cursor="hand2",
-                    bd=0,
-                    highlightthickness=0,
-                    bg=surf,
-                    fg=surface_for(self).get("muted", "#b5bac1"),
+            surf = surface_for(self).get("canvas", "#1e1f22")
+            box.configure(bg=surf)
+            thumb_lbl = tk.Label(
+                box,
+                text="…",
+                relief=tk.FLAT,
+                cursor="hand2",
+                bd=0,
+                highlightthickness=0,
+                bg=surf,
+                fg=surface_for(self).get("muted", "#b5bac1"),
+            )
+            thumb_lbl.pack(fill=tk.BOTH, expand=True)
+            name = (item.get("name") or f"#{item.get('id')}")[:22]
+            owner = (item.get("owner") or "").strip()
+            label_txt = f"{name}\n{owner}" if owner else name
+            ttk.Label(
+                cell, text=label_txt, wraplength=max(60, thumb), justify=tk.CENTER
+            ).pack()
+            cid = int(item.get("id") or 0)
+            post_url = (item.get("post_url") or "").strip()
+            self._bind_thumb(thumb_lbl, cid, post_url)
+            url = (item.get("preview_url") or "").strip()
+            if url:
+                self._load_thumb(
+                    thumb_lbl,
+                    url,
+                    self._gen_by_mode[mode],
+                    post_url=post_url,
+                    char_id=cid,
                 )
-                thumb_lbl.pack(fill=tk.BOTH, expand=True)
-                name = (item.get("name") or f"#{item.get('id')}")[:22]
-                owner = (item.get("owner") or "").strip()
-                label_txt = f"{name}\n{owner}" if owner else name
-                ttk.Label(
-                    cell, text=label_txt, wraplength=max(60, thumb), justify=tk.CENTER
-                ).pack()
-                cid = int(item.get("id") or 0)
-                post_url = (item.get("post_url") or "").strip()
-                self._bind_thumb(thumb_lbl, cid, post_url)
-                url = (item.get("preview_url") or "").strip()
-                if url:
-                    self._load_thumb(
-                        thumb_lbl,
-                        url,
-                        self._gen_by_mode[mode],
-                        post_url=post_url,
-                        char_id=cid,
-                    )
         self._pane_ids[mode] = tuple(
             int(it.get("id") or 0) for it in self._items
         )

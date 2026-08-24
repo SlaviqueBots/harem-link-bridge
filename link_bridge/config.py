@@ -79,6 +79,8 @@ class BridgeConfig:
     omni_window_geometry: str = ""
     # App chrome: "dark" (default) or "light" (classic bright look).
     ui_theme: str = "dark"
+    # Extra UI scale on top of Windows DPI (0.75–2.0). 1.0 = follow display DPI.
+    ui_scale: float = 1.0
     # Left-click opens in-client Omnicraft instead of the image viewer.
     left_click_omni: bool = False
     # Roster: hide cards that already belong to any set.
@@ -153,6 +155,7 @@ def load_config() -> BridgeConfig:
         omni_full_image=bool(raw.get("omni_full_image", False)),
         omni_window_geometry=str(raw.get("omni_window_geometry") or ""),
         ui_theme=_normalize_ui_theme(raw.get("ui_theme", "dark")),
+        ui_scale=_clamp_ui_scale(raw.get("ui_scale", 1.0)),
         left_click_omni=bool(raw.get("left_click_omni", False)),
         hide_in_any_set=bool(raw.get("hide_in_any_set", False)),
         scroll_speed=_clamp_scroll_speed(raw.get("scroll_speed", 3.0)),
@@ -187,6 +190,14 @@ def _normalize_post_target(raw: object) -> str:
 def _normalize_ui_theme(raw: object) -> str:
     text = str(raw or "dark").strip().lower()
     return "light" if text == "light" else "dark"
+
+
+def _clamp_ui_scale(raw: object) -> float:
+    try:
+        v = float(raw)
+    except Exception:
+        v = 1.0
+    return max(0.75, min(2.0, round(v, 2)))
 
 
 def save_config(cfg: BridgeConfig) -> Path:

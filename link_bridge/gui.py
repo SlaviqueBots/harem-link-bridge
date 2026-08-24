@@ -66,6 +66,9 @@ class UpdateProgressDialog(tk.Toplevel):
 
 class LinkBridgeApp(tk.Tk):
     def __init__(self, cfg: BridgeConfig | None = None) -> None:
+        from link_bridge.dpi import apply_ui_scale, enable_dpi_awareness
+
+        enable_dpi_awareness()
         super().__init__()
         self.title(f"Harem Link Bridge  v{__version__}")
         self.minsize(720, 560)
@@ -80,6 +83,7 @@ class LinkBridgeApp(tk.Tk):
 
         self.cfg.ui_theme = normalize_theme(self.cfg.ui_theme)
         apply_app_theme(self, self.cfg.ui_theme)
+        apply_ui_scale(self, getattr(self.cfg, "ui_scale", 1.0))
 
         self._client: BridgeClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -357,6 +361,33 @@ class LinkBridgeApp(tk.Tk):
             command=self._on_theme_change,
         ).pack(side=tk.LEFT, padx=(8, 0))
 
+        scale_row = ttk.Frame(root)
+        scale_row.pack(fill=tk.X, **pad)
+        ttk.Label(scale_row, text="UI scale (4K / blurry text)").pack(side=tk.LEFT)
+        from link_bridge.config import _clamp_ui_scale
+
+        self.ui_scale_var = tk.DoubleVar(
+            value=_clamp_ui_scale(getattr(self.cfg, "ui_scale", 1.0))
+        )
+        self.ui_scale_label = tk.StringVar(
+            value=f"{int(round(float(self.ui_scale_var.get()) * 100))}%"
+        )
+        self._ui_scale_after: str | None = None
+        ttk.Scale(
+            scale_row,
+            from_=0.75,
+            to=2.0,
+            orient=tk.HORIZONTAL,
+            variable=self.ui_scale_var,
+            command=self._on_ui_scale_slide,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        ttk.Label(scale_row, textvariable=self.ui_scale_label, width=5).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(
+            scale_row, text="Default", width=8, command=self._reset_ui_scale
+        ).pack(side=tk.LEFT, padx=(6, 0))
+
         ttk.Label(
             root,
             text=(
@@ -473,6 +504,10 @@ class LinkBridgeApp(tk.Tk):
 
         self.cfg.preview_scale = _clamp_preview_scale(self.preview_scale_var.get())
         self.cfg.scroll_speed = _clamp_scroll_speed(self.scroll_speed_var.get())
+        if hasattr(self, "ui_scale_var"):
+            from link_bridge.config import _clamp_ui_scale
+
+            self.cfg.ui_scale = _clamp_ui_scale(self.ui_scale_var.get())
         if hasattr(self, "theme_var"):
             self.cfg.ui_theme = normalize_theme(self.theme_var.get())
         self.cfg.ensure_device_id()
@@ -505,6 +540,41 @@ class LinkBridgeApp(tk.Tk):
         except Exception:
             pass
         self._append_log(f"Appearance → {mode}")
+
+    def _on_ui_scale_slide(self, _value=None) -> None:
+        from link_bridge.config import _clamp_ui_scale
+
+        scale = _clamp_ui_scale(self.ui_scale_var.get())
+        self.ui_scale_label.set(f"{int(round(scale * 100))}%")
+        if self._ui_scale_after is not None:
+            try:
+                self.after_cancel(self._ui_scale_after)
+            except Exception:
+                pass
+        self._ui_scale_after = self.after(180, self._commit_ui_scale)
+
+    def _reset_ui_scale(self) -> None:
+        self.ui_scale_var.set(1.0)
+        self._on_ui_scale_slide()
+        self._commit_ui_scale()
+
+    def _commit_ui_scale(self) -> None:
+        self._ui_scale_after = None
+        from link_bridge.config import _clamp_ui_scale
+        from link_bridge.dpi import apply_ui_scale
+
+        scale = _clamp_ui_scale(self.ui_scale_var.get())
+        self.ui_scale_var.set(scale)
+        self.ui_scale_label.set(f"{int(round(scale * 100))}%")
+        if abs(scale - float(getattr(self.cfg, "ui_scale", 1.0) or 1.0)) < 0.01:
+            return
+        self.cfg.ui_scale = scale
+        apply_ui_scale(self, scale)
+        from link_bridge.theme import apply_app_theme, schedule_theme_refresh
+
+        apply_app_theme(self, self.cfg.ui_theme)
+        schedule_theme_refresh(self, self.cfg.ui_theme, delay_ms=80)
+        save_config(self.cfg)
 
     def _on_preview_scale_slide(self, _value=None) -> None:
         from link_bridge.config import _clamp_preview_scale
@@ -1666,5 +1736,8 @@ class LinkBridgeApp(tk.Tk):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    from link_bridge.dpi import enable_dpi_awareness
+
+    enable_dpi_awareness()
     app = LinkBridgeApp()
     app.mainloop()

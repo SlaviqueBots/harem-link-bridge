@@ -23,6 +23,24 @@ MIN_ROW_H = 110
 MAX_ROW_H = 280
 # Pack/fill around this height so rows hold enough tiles to span the window.
 TARGET_ROW_H = 168
+# Below this, justify_layout packs a single left column (startup flash).
+MIN_READY_WIDTH = 240
+
+
+def ready_layout_width(canvas_w: int, parent_w: int = 0) -> int | None:
+    """Width to lay out, or None if the widget is not mapped yet."""
+    try:
+        cw = int(canvas_w or 0)
+    except Exception:
+        cw = 0
+    try:
+        pw = int(parent_w or 0)
+    except Exception:
+        pw = 0
+    width = max(cw, pw - 28 if pw > 28 else 0)
+    if width < MIN_READY_WIDTH:
+        return None
+    return width
 
 
 def _clamp_aspect(raw: float) -> float:
@@ -261,6 +279,8 @@ class JustifiedGallery:
         self._scroll_gen = 0
         self._smooth_remaining = 0.0
         self._smooth_after: str | None = None
+        self._stamp = 0
+        self._layout_waits = 0
 
     def set_preview_scale(self, scale: float) -> None:
         self._preview_scale = max(0.5, min(2.0, float(scale or 1.0)))
@@ -445,7 +465,8 @@ class JustifiedGallery:
         # another pane just because this one finished rendering.
         if _wheel_target is None:
             self._claim_wheel()
-        gen = self._gen_fn()
+        self._stamp += 1
+        gen = self._stamp
         self._entries = []
         self._last_sig = None
         for item in items:
@@ -482,6 +503,24 @@ class JustifiedGallery:
                 lbl.configure(text="?")
         # First paint after labels exist; aspects arrive async.
         self._schedule_layout(immediate=True)
+
+    def retry_missing(self) -> None:
+        """Re-fetch tiles that never got a photo (cancelled while we were away)."""
+        gen = self._stamp
+        pending = False
+        for entry in self._entries:
+            if entry.get("photo") is not None:
+                continue
+            if entry.get("data"):
+                pending = True
+                continue
+            url = (entry.get("url") or "").strip()
+            if not url:
+                continue
+            pending = True
+            self._fetch(entry, gen)
+        if pending:
+            self._schedule_layout(immediate=True)
 
     def remove_char(self, char_id: int) -> bool:
         """Drop one tile and reflow in place (no full page reload)."""
@@ -562,12 +601,12 @@ class JustifiedGallery:
             )
         except Exception:
             pass
-        gen = self._gen_fn()
+        gen = self._stamp
         self._fetch(hit, gen)
         return True
 
     def _apply_bytes(self, entry: dict[str, Any], data: bytes, gen: int) -> None:
-        if gen != self._gen_fn():
+        if gen != self._stamp:
             return
         if self._inner is None or not entry["label"].winfo_exists():
             return
@@ -585,7 +624,7 @@ class JustifiedGallery:
 
         def on_aspect(a: float) -> None:
             def ui() -> None:
-                if gen != self._gen_fn():
+                if gen != self._stamp:
                     return
                 if self._inner is None or not entry["label"].winfo_exists():
                     return
@@ -620,7 +659,7 @@ class JustifiedGallery:
             entry["fetch_attempts"] = nxt
 
             def fail_or_retry() -> None:
-                if gen != self._gen_fn() or not entry["label"].winfo_exists():
+                if gen != self._stamp or not entry["label"].winfo_exists():
                     return
                 if nxt < 3:
                     entry["label"].configure(text="…")
@@ -648,7 +687,7 @@ class JustifiedGallery:
         schedule_thumb_fetch(url, on_data=on_data, on_err=on_err)
 
     def _retry_fetch(self, entry: dict[str, Any], gen: int) -> None:
-        if gen != self._gen_fn() or not entry["label"].winfo_exists():
+        if gen != self._stamp or not entry["label"].winfo_exists():
             return
         entry["fetch_attempts"] = 0
         entry["label"].configure(text="…", image="")
@@ -671,10 +710,21 @@ class JustifiedGallery:
             return
         if self._canvas is None or self._inner is None or not self._entries:
             return
-        view_w = max(80, self._canvas.winfo_width())
+        parent_w = 0
+        try:
+            parent_w = int(self._parent.winfo_width() or 0)
+        except Exception:
+            parent_w = 0
+        ready = ready_layout_width(self._canvas.winfo_width(), parent_w)
+        if ready is None:
+            self._layout_waits += 1
+            if self._layout_waits < 40:
+                self._layout_after = self._canvas.after(16, self._layout)
+                return
+            ready = max(240, int(self._canvas.winfo_width() or 0), parent_w - 28)
+        self._layout_waits = 0
+        view_w = ready
         view_h = max(80, self._canvas.winfo_height())
-        if view_w < 40:
-            return
         target = target_row_height(view_h, view_w, scale=self._preview_scale)
         aspects = [float(e.get("aspect") or 1.0) for e in self._entries]
         # Round aspects so tiny EXIF noise doesn't force a full reshuffle.

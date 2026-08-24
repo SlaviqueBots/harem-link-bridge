@@ -114,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config()
     if args.dev:
+        from link_bridge.dpi import enable_dpi_awareness
+
+        enable_dpi_awareness()
         cfg.check_updates = False
         cfg.start_hidden = False
         app = LinkBridgeApp(cfg)

@@ -774,7 +774,23 @@ class ConjureFinderApp(ttk.Frame):
             return
         from conjure_finder.settings_ui import SettingsDialog
 
-        SettingsDialog(self)
+        SettingsDialog(self, on_saved=self._after_api_keys_saved)
+
+    def _after_api_keys_saved(self) -> None:
+        from conjure_finder.settings import auth_snapshot
+
+        live = auth_snapshot()
+        bits = []
+        if live.get("danbooru"):
+            bits.append("Danbooru")
+        if live.get("rule34"):
+            bits.append("Rule34")
+        if bits:
+            self.status_var.set(
+                f"{' + '.join(bits)} keys applied — you can search now (no restart)."
+            )
+        else:
+            self.status_var.set("Settings saved. Add Danbooru or Rule34 keys to search.")
 
     def cancel_search(self) -> None:
         self._cancel.set()

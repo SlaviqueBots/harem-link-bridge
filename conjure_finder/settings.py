@@ -99,13 +99,38 @@ def _read_extra_env_lines(known_keys: set[str]) -> list[str]:
 
 
 def _reload_cfg() -> None:
-    """Rebuild bot Config singleton so clients pick up new keys."""
+    """Rebuild Config and rebind every module that imported CFG by name.
+
+    ``from bot.core.config import CFG`` copies the object. Replacing only
+    ``bot.core.config.CFG`` leaves Danbooru/Rule34 clients on the old empty
+    keys until process restart.
+    """
+    import os
+    import sys
+
+    os.environ.setdefault(
+        "BOT_TOKEN", os.environ.get("BOT_TOKEN") or "conjure-finder-unused"
+    )
     try:
         import bot.core.config as cfg_mod
-
-        cfg_mod.CFG = cfg_mod.Config.load()
     except Exception:
-        pass
+        return
+    old = getattr(cfg_mod, "CFG", None)
+    try:
+        new = cfg_mod.Config.load()
+    except Exception:
+        return
+    cfg_mod.CFG = new
+    if old is None or old is new:
+        return
+    for mod in list(sys.modules.values()):
+        if mod is None or mod is cfg_mod:
+            continue
+        try:
+            if getattr(mod, "CFG", None) is old:
+                setattr(mod, "CFG", new)
+        except Exception:
+            continue
 
 
 def auth_snapshot() -> dict[str, bool]:
