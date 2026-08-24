@@ -1,5 +1,7 @@
 ﻿# Local config with secrets — never commit
 harem_link_bridge.json
+harem_link_bridge.dev.json
+conjure_finder_findings.json
 *.exe
 *.exe.new
 *.exe.bak
