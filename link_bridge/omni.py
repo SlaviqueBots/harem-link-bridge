@@ -347,7 +347,7 @@ def _apply_omni_theme(root: tk.Misc, mode: str | None = None) -> dict[str, str]:
         "Omni.Muted.TLabel",
         background=bg,
         foreground=muted,
-        font=("Segoe UI", 8),
+        font="TkSmallCaptionFont",
         borderwidth=0,
     )
     style.configure(
@@ -429,6 +429,13 @@ def _apply_omni_theme(root: tk.Misc, mode: str | None = None) -> dict[str, str]:
     # Remember for panels (caption / image pad).
     try:
         root._omni_palette = c  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        from link_bridge.dpi import apply_ui_scale
+
+        extra = float(getattr(root, "_bridge_ui_scale", 1.0) or 1.0)
+        apply_ui_scale(root, extra)
     except Exception:
         pass
     return c

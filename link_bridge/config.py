@@ -79,7 +79,7 @@ class BridgeConfig:
     omni_window_geometry: str = ""
     # App chrome: "dark" (default) or "light" (classic bright look).
     ui_theme: str = "dark"
-    # Extra UI scale on top of Windows DPI (0.75–2.0). 1.0 = follow display DPI.
+    # Extra UI scale on top of Windows DPI (0.90–1.50). 1.0 = follow display DPI.
     ui_scale: float = 1.0
     # Left-click opens in-client Omnicraft instead of the image viewer.
     left_click_omni: bool = False
@@ -193,11 +193,9 @@ def _normalize_ui_theme(raw: object) -> str:
 
 
 def _clamp_ui_scale(raw: object) -> float:
-    try:
-        v = float(raw)
-    except Exception:
-        v = 1.0
-    return max(0.75, min(2.0, round(v, 2)))
+    from link_bridge.dpi import clamp_ui_scale
+
+    return clamp_ui_scale(raw)
 
 
 def save_config(cfg: BridgeConfig) -> Path:

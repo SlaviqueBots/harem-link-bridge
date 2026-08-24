@@ -71,7 +71,14 @@ def ask_text(
     if prompt:
         ttk.Label(frame, text=prompt, wraplength=420).pack(anchor=tk.W, pady=(0, 6))
 
-    text = tk.Text(frame, height=6, width=52, wrap=tk.WORD, undo=True)
+    text = tk.Text(
+        frame,
+        height=6,
+        width=52,
+        wrap=tk.WORD,
+        undo=True,
+        font="TkTextFont",
+    )
     text.pack(fill=tk.BOTH, expand=True)
     text.insert("1.0", initial or "")
     text.focus_set()

@@ -151,7 +151,12 @@ class SetsPanel(ttk.Frame):
         )
         self._delete_confirm_btn.pack(side=tk.LEFT, padx=(8, 0))
 
-        self._list = tk.Listbox(left, exportselection=False)
+        self._list = tk.Listbox(
+            left,
+            exportselection=False,
+            font="TkTextFont",
+            activestyle="none",
+        )
         self._list.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
         self._list.bind("<<ListboxSelect>>", self._on_select)
         self._list.bind("<Button-3>", self._popup_set_list_menu)

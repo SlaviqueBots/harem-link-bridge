@@ -223,6 +223,7 @@ def apply_app_theme(root: tk.Misc, mode: str = "dark") -> dict[str, str]:
         padding=4,
         borderwidth=0,
         relief="flat",
+        font="TkTextFont",
     )
     style.configure(
         "TLabelframe",
@@ -238,7 +239,7 @@ def apply_app_theme(root: tk.Misc, mode: str = "dark") -> dict[str, str]:
         "TLabelframe.Label",
         background=c["bg"],
         foreground=c["muted"],
-        font=("Segoe UI", 8),
+        font="TkSmallCaptionFont",
     )
     style.configure(
         "TNotebook",
@@ -362,6 +363,7 @@ def _tint_tree(widget: tk.Misc, c: dict[str, str]) -> None:
                 highlightthickness=0,
                 bd=0,
                 relief=tk.FLAT,
+                font="TkTextFont",
             )
         elif cls == "Entry":
             widget.configure(  # type: ignore[call-arg]
@@ -371,6 +373,7 @@ def _tint_tree(widget: tk.Misc, c: dict[str, str]) -> None:
                 relief=tk.FLAT,
                 highlightthickness=0,
                 bd=0,
+                font="TkTextFont",
             )
         elif cls in ("Frame", "Labelframe", "Toplevel", "Tk"):
             try:
@@ -440,8 +443,19 @@ def _tint_tree(widget: tk.Misc, c: dict[str, str]) -> None:
 
 def schedule_theme_refresh(root: tk.Misc, mode: str, *, delay_ms: int = 80) -> None:
     """Re-tint after new panels mount (roster galleries, etc.)."""
+
+    def _go() -> None:
+        apply_app_theme(root, mode)
+        try:
+            from link_bridge.dpi import apply_ui_scale
+
+            extra = float(getattr(root, "_bridge_ui_scale", 1.0) or 1.0)
+            apply_ui_scale(root, extra)
+        except Exception:
+            pass
+
     try:
-        root.after(delay_ms, lambda: apply_app_theme(root, mode))
+        root.after(delay_ms, _go)
     except Exception:
         pass
 

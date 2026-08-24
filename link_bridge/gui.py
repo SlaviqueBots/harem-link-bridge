@@ -82,8 +82,12 @@ class LinkBridgeApp(tk.Tk):
         from link_bridge.theme import apply_app_theme, normalize_theme
 
         self.cfg.ui_theme = normalize_theme(self.cfg.ui_theme)
+        from link_bridge.config import _clamp_ui_scale
+
+        self.cfg.ui_scale = _clamp_ui_scale(getattr(self.cfg, "ui_scale", 1.0))
         apply_app_theme(self, self.cfg.ui_theme)
-        apply_ui_scale(self, getattr(self.cfg, "ui_scale", 1.0))
+        apply_ui_scale(self, self.cfg.ui_scale)
+        self.after_idle(lambda: apply_ui_scale(self, self.cfg.ui_scale))
 
         self._client: BridgeClient | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -134,6 +138,11 @@ class LinkBridgeApp(tk.Tk):
             self.after(500, self._sync_pause_on_lock_watcher)
         if self.cfg.check_updates:
             self.after(1500, lambda: self.check_updates(silent=True))
+        self.bind_all("<Control-0>", lambda _e: self._reset_ui_scale())
+        self.bind_all("<Control-Key-0>", lambda _e: self._reset_ui_scale())
+        self.bind_all("<Control-minus>", lambda _e: self._nudge_ui_scale(-0.05) or "break")
+        self.bind_all("<Control-plus>", lambda _e: self._nudge_ui_scale(0.05) or "break")
+        self.bind_all("<Control-equal>", lambda _e: self._nudge_ui_scale(0.05) or "break")
 
     def _build(self) -> None:
         pad = {"padx": 10, "pady": 6}
@@ -363,8 +372,9 @@ class LinkBridgeApp(tk.Tk):
 
         scale_row = ttk.Frame(root)
         scale_row.pack(fill=tk.X, **pad)
-        ttk.Label(scale_row, text="UI scale (4K / blurry text)").pack(side=tk.LEFT)
+        ttk.Label(scale_row, text="UI scale").pack(side=tk.LEFT)
         from link_bridge.config import _clamp_ui_scale
+        from link_bridge.dpi import UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP
 
         self.ui_scale_var = tk.DoubleVar(
             value=_clamp_ui_scale(getattr(self.cfg, "ui_scale", 1.0))
@@ -373,20 +383,20 @@ class LinkBridgeApp(tk.Tk):
             value=f"{int(round(float(self.ui_scale_var.get()) * 100))}%"
         )
         self._ui_scale_after: str | None = None
-        ttk.Scale(
-            scale_row,
-            from_=0.75,
-            to=2.0,
-            orient=tk.HORIZONTAL,
-            variable=self.ui_scale_var,
-            command=self._on_ui_scale_slide,
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
-        ttk.Label(scale_row, textvariable=self.ui_scale_label, width=5).pack(
+        ttk.Button(
+            scale_row, text="−", width=3, command=lambda: self._nudge_ui_scale(-UI_SCALE_STEP)
+        ).pack(side=tk.LEFT, padx=(8, 4))
+        ttk.Label(scale_row, textvariable=self.ui_scale_label, width=5).pack(side=tk.LEFT)
+        ttk.Button(
+            scale_row, text="+", width=3, command=lambda: self._nudge_ui_scale(UI_SCALE_STEP)
+        ).pack(side=tk.LEFT, padx=(4, 8))
+        ttk.Button(scale_row, text="Reset", width=6, command=self._reset_ui_scale).pack(
             side=tk.LEFT
         )
-        ttk.Button(
-            scale_row, text="Default", width=8, command=self._reset_ui_scale
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(
+            scale_row,
+            text=f"{int(UI_SCALE_MIN * 100)}–{int(UI_SCALE_MAX * 100)}%   Ctrl+0 resets",
+        ).pack(side=tk.LEFT, padx=(10, 0))
 
         ttk.Label(
             root,
@@ -428,7 +438,7 @@ class LinkBridgeApp(tk.Tk):
         ttk.Entry(adv, textvariable=self.port_var).pack(fill=tk.X)
 
         ttk.Label(root, text="Log").pack(anchor=tk.W, pady=(10, 0))
-        self.log = tk.Text(root, height=8, wrap=tk.WORD, font=("Consolas", 10))
+        self.log = tk.Text(root, height=8, wrap=tk.WORD, font="TkFixedFont")
         self.log.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         self.log.configure(state=tk.DISABLED)
 
@@ -519,6 +529,9 @@ class LinkBridgeApp(tk.Tk):
         mode = normalize_theme(self.theme_var.get())
         self.cfg.ui_theme = mode
         apply_app_theme(self, mode)
+        from link_bridge.dpi import apply_ui_scale
+
+        apply_ui_scale(self, getattr(self.cfg, "ui_scale", 1.0))
         schedule_theme_refresh(self, mode, delay_ms=120)
         host = getattr(self, "_omni_host", None)
         if host is not None:
@@ -541,21 +554,15 @@ class LinkBridgeApp(tk.Tk):
             pass
         self._append_log(f"Appearance → {mode}")
 
-    def _on_ui_scale_slide(self, _value=None) -> None:
+    def _nudge_ui_scale(self, delta: float) -> None:
         from link_bridge.config import _clamp_ui_scale
 
-        scale = _clamp_ui_scale(self.ui_scale_var.get())
-        self.ui_scale_label.set(f"{int(round(scale * 100))}%")
-        if self._ui_scale_after is not None:
-            try:
-                self.after_cancel(self._ui_scale_after)
-            except Exception:
-                pass
-        self._ui_scale_after = self.after(180, self._commit_ui_scale)
+        nxt = _clamp_ui_scale(float(self.ui_scale_var.get() or 1.0) + float(delta))
+        self.ui_scale_var.set(nxt)
+        self._commit_ui_scale()
 
     def _reset_ui_scale(self) -> None:
         self.ui_scale_var.set(1.0)
-        self._on_ui_scale_slide()
         self._commit_ui_scale()
 
     def _commit_ui_scale(self) -> None:
@@ -566,13 +573,13 @@ class LinkBridgeApp(tk.Tk):
         scale = _clamp_ui_scale(self.ui_scale_var.get())
         self.ui_scale_var.set(scale)
         self.ui_scale_label.set(f"{int(round(scale * 100))}%")
-        if abs(scale - float(getattr(self.cfg, "ui_scale", 1.0) or 1.0)) < 0.01:
+        if abs(scale - float(getattr(self.cfg, "ui_scale", 1.0) or 1.0)) < 0.005:
             return
         self.cfg.ui_scale = scale
-        apply_ui_scale(self, scale)
         from link_bridge.theme import apply_app_theme, schedule_theme_refresh
 
         apply_app_theme(self, self.cfg.ui_theme)
+        apply_ui_scale(self, scale)
         schedule_theme_refresh(self, self.cfg.ui_theme, delay_ms=80)
         save_config(self.cfg)
 

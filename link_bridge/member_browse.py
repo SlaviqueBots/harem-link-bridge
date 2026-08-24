@@ -111,7 +111,12 @@ class MemberBrowsePanel(ttk.Frame):
         fr = ttk.Frame(pop, relief=tk.SOLID, borderwidth=1)
         fr.pack(fill=tk.BOTH, expand=True)
         lst = tk.Listbox(
-            fr, height=8, exportselection=False, activestyle="dotbox", width=28
+            fr,
+            height=8,
+            exportselection=False,
+            activestyle="dotbox",
+            width=28,
+            font="TkTextFont",
         )
         ys = ttk.Scrollbar(fr, orient=tk.VERTICAL, command=lst.yview)
         lst.configure(yscrollcommand=ys.set)
