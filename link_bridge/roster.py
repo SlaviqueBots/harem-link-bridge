@@ -43,6 +43,7 @@ FocusPrefFn = Callable[[], bool]
 ListSetsFn = Callable[[str, OkCb, ErrCb], None]
 RenameSetFn = Callable[[str, str, OkCb, ErrCb], None]
 DeleteSetFn = Callable[[str, OkCb, ErrCb], None]
+AvoidSetFn = Callable[[str, bool, OkCb, ErrCb], None]
 PresentSetFn = Callable[[str, OkCb, ErrCb], None]
 TargetGetFn = Callable[[], str]
 TargetSetFn = Callable[[str], None]
@@ -98,6 +99,7 @@ class RosterPanel(ttk.Frame):
         list_sets: ListSetsFn | None = None,
         rename_set: RenameSetFn | None = None,
         delete_set: DeleteSetFn | None = None,
+        avoid_set: AvoidSetFn | None = None,
         present_set: PresentSetFn | None = None,
         fetch_tamed: FetchTamedFn | None = None,
         fetch_market: FetchMarketFn | None = None,
@@ -129,6 +131,7 @@ class RosterPanel(ttk.Frame):
         self._list_sets = list_sets
         self._rename_set = rename_set
         self._delete_set = delete_set
+        self._avoid_set = avoid_set
         self._present_set = present_set
         self._fetch_tamed = fetch_tamed
         self._fetch_market = fetch_market
@@ -255,6 +258,7 @@ class RosterPanel(ttk.Frame):
                 dm_craft=dm_craft,
                 rename_set=rename_set,
                 delete_set=delete_set,
+                avoid_set=avoid_set,
                 present_set=present_set,
                 get_set_names=self._own_set_names,
                 on_set_names=self._remember_set_names,
@@ -1394,6 +1398,7 @@ class RosterPanel(ttk.Frame):
             on_remove_from_set=self._remove_from_set,
             can_edit_sets=bool(item.get("mine", True)),
             can_cycle_name=bool(item.get("can_cycle_name")),
+            is_done=bool(item.get("done")),
         )
 
     def _edit_flavour(self, char_id: int) -> None:
@@ -1454,6 +1459,10 @@ class RosterPanel(ttk.Frame):
         if action_id == "omni_dm":
             # Telegram DM omnicraft (legacy), not the in-client panel.
             action_id = "omni"
+        if action_id == "mi_omni":
+            if self._open_omni_ui is not None:
+                self._open_omni_ui(int(char_id))
+            action_id = "mi"
         # Prefer dedicated dm_craft; fall back to open_omni for plain omni.
         if self._dm_craft is None:
             if action_id == "omni":
@@ -1481,7 +1490,9 @@ class RosterPanel(ttk.Frame):
                         self._note_set_used(str(action_id).split(":", 1)[1])
                         if self._get_hide_in_any_set():
                             self.remove_char_from_view(int(char_id))
-                    if action_id == "dn" and self._mode == "undone":
+                    if action_id in ("tr", "ptr"):
+                        self.remove_char_from_view(int(char_id))
+                    elif action_id == "dn" and self._mode == "undone":
                         self.remove_char_from_view(int(char_id))
                     elif action_id == "ud" and self._mode == "done":
                         self.remove_char_from_view(int(char_id))

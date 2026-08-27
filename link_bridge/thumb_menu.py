@@ -43,6 +43,10 @@ def apply_silent_craft_item(item: dict[str, Any] | None, action_id: str) -> None
         item["flavour"] = ""
     elif aid == "rnt":
         item["note"] = ""
+    elif aid == "dn":
+        item["done"] = True
+    elif aid == "ud":
+        item["done"] = False
 
 
 def popup_thumb_menu(
@@ -69,6 +73,7 @@ def popup_thumb_menu(
     on_remove_from_set: Callable[[int, str], None] | None = None,
     can_edit_sets: bool = True,
     can_cycle_name: bool = False,
+    is_done: bool = False,
 ) -> None:
     """Show nested bridge craft menu at the pointer."""
     menu = tk.Menu(widget, tearoff=0)
@@ -172,6 +177,10 @@ def popup_thumb_menu(
 
     copy_m = tk.Menu(menu, tearoff=0)
     copy_m.add_command(label="Mirror card", command=lambda: craft("mi"))
+    copy_m.add_command(
+        label="Mirror card & start Omnicraft",
+        command=lambda: craft("mi_omni"),
+    )
     menu.add_cascade(label="Copy", menu=copy_m)
 
     extra = tk.Menu(menu, tearoff=0)
@@ -185,16 +194,46 @@ def popup_thumb_menu(
     extra.add_command(label="Open omni in bot DMs", command=lambda: craft("omni_dm"))
     menu.add_cascade(label="Extra crafts", menu=extra)
 
+    menu.add_command(
+        label="Mark undone" if is_done else "Mark done",
+        command=lambda: craft("ud" if is_done else "dn"),
+    )
+
     status = tk.Menu(menu, tearoff=0)
-    status.add_command(label="Mark done", command=lambda: craft("dn"))
-    status.add_command(label="Mark undone", command=lambda: craft("ud"))
     status.add_command(label="Hide card", command=lambda: craft("hi"))
     status.add_command(label="Show card", command=lambda: craft("sh"))
     menu.add_cascade(label="Status", menu=status)
 
+    def confirm_trash(kind: str) -> None:
+        from tkinter import messagebox
+
+        top = widget.winfo_toplevel()
+        if kind == "tr":
+            ok = messagebox.askyesno(
+                "Trash",
+                f"Trash #{char_id} to the market?\n"
+                "You get +5. Others can buy it after the grace period.",
+                parent=top,
+            )
+        else:
+            ok = messagebox.askyesno(
+                "Perma trash",
+                f"Permanently delete #{char_id}?\n"
+                "You get +5. Cannot restore from trashbin.",
+                parent=top,
+            )
+        if ok:
+            craft(kind)
+
     danger = tk.Menu(menu, tearoff=0)
-    danger.add_command(label="Trash (market)…", command=lambda: craft("tr"))
-    danger.add_command(label="Perma trash…", command=lambda: craft("ptr"))
+    danger.add_command(
+        label="Trash (market)…",
+        command=lambda: confirm_trash("tr"),
+    )
+    danger.add_command(
+        label="Perma trash…",
+        command=lambda: confirm_trash("ptr"),
+    )
     menu.add_cascade(label="Trash", menu=danger)
 
     menu.add_separator()

@@ -70,13 +70,17 @@ class BridgeConfig:
     # Last window geometry, e.g. "900x760+120+80". Empty = use DEFAULT_GEOMETRY.
     window_geometry: str = ""
     # Tk state: "normal" or "zoomed" (Windows maximized).
-    window_state: str = "normal"
+    window_state: str = "zoomed"
     # Soft beep when an in-client omni craft lands a new image.
     omni_beep: bool = False
     # Omni panel: load original/sample instead of the small preview (larger pane).
     omni_full_image: bool = False
+    # Repeat last OmniCraft (green) action. Tk keysym; default space.
+    omni_repeat_key: str = "space"
     # Last Omnicraft host geometry, e.g. "720x520+80+60". Empty = center default.
     omni_window_geometry: str = ""
+    # Tk state: "normal" or "zoomed" (Windows maximized).
+    omni_window_state: str = "zoomed"
     # App chrome: "dark" (default) or "light" (classic bright look).
     ui_theme: str = "dark"
     # Extra UI scale on top of Windows DPI (0.90–1.50). 1.0 = follow display DPI.
@@ -150,10 +154,14 @@ def load_config() -> BridgeConfig:
         prefer_original_open=bool(raw.get("prefer_original_open", True)),
         text_edit_geometry=str(raw.get("text_edit_geometry") or ""),
         window_geometry=str(raw.get("window_geometry") or ""),
-        window_state=str(raw.get("window_state") or "normal"),
+        window_state=_normalize_window_state(raw.get("window_state", "zoomed")),
         omni_beep=bool(raw.get("omni_beep", False)),
         omni_full_image=bool(raw.get("omni_full_image", False)),
+        omni_repeat_key=_normalize_omni_repeat_key(raw.get("omni_repeat_key", "space")),
         omni_window_geometry=str(raw.get("omni_window_geometry") or ""),
+        omni_window_state=_normalize_window_state(
+            raw.get("omni_window_state", "zoomed")
+        ),
         ui_theme=_normalize_ui_theme(raw.get("ui_theme", "dark")),
         ui_scale=_clamp_ui_scale(raw.get("ui_scale", 1.0)),
         left_click_omni=bool(raw.get("left_click_omni", False)),
@@ -192,10 +200,23 @@ def _normalize_ui_theme(raw: object) -> str:
     return "light" if text == "light" else "dark"
 
 
+def _normalize_window_state(raw: object) -> str:
+    return "zoomed" if str(raw or "").strip().lower() == "zoomed" else "normal"
+
+
 def _clamp_ui_scale(raw: object) -> float:
     from link_bridge.dpi import clamp_ui_scale
 
     return clamp_ui_scale(raw)
+
+
+def _normalize_omni_repeat_key(raw: object) -> str:
+    text = str(raw or "space").strip().lower()
+    if text in ("", "space", "spacebar", " "):
+        return "space"
+    if text.startswith("key-"):
+        text = text[4:]
+    return text or "space"
 
 
 def save_config(cfg: BridgeConfig) -> Path:

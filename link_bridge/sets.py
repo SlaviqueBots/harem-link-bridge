@@ -34,6 +34,7 @@ RegisterCupFn = Callable[[int, OkCb, ErrCb], None]
 DmCraftFn = Callable[[int, str, OkCb, ErrCb], None]
 RenameSetFn = Callable[[str, str, OkCb, ErrCb], None]
 DeleteSetFn = Callable[[str, OkCb, ErrCb], None]
+AvoidSetFn = Callable[[str, bool, OkCb, ErrCb], None]
 PresentSetFn = Callable[[str, OkCb, ErrCb], None]
 GetSetNamesFn = Callable[[], list[str]]
 OnSetNamesFn = Callable[[list[str]], None]
@@ -59,6 +60,7 @@ class SetsPanel(ttk.Frame):
         dm_craft: DmCraftFn | None = None,
         rename_set: RenameSetFn | None = None,
         delete_set: DeleteSetFn | None = None,
+        avoid_set: AvoidSetFn | None = None,
         present_set: PresentSetFn | None = None,
         get_set_names: GetSetNamesFn | None = None,
         on_set_names: OnSetNamesFn | None = None,
@@ -83,6 +85,7 @@ class SetsPanel(ttk.Frame):
         self._dm_craft = dm_craft
         self._rename_set = rename_set
         self._delete_set = delete_set
+        self._avoid_set = avoid_set
         self._present_set = present_set
         self._get_set_names = get_set_names
         self._on_set_names = on_set_names
@@ -161,6 +164,7 @@ class SetsPanel(ttk.Frame):
         self._list.bind("<<ListboxSelect>>", self._on_select)
         self._list.bind("<Button-3>", self._popup_set_list_menu)
         self._names: list[str] = []
+        self._avoided: set[str] = set()
 
         bar = ttk.Frame(right)
         bar.pack(fill=tk.X)
@@ -244,9 +248,14 @@ class SetsPanel(ttk.Frame):
                 self._on_log(f"Sets error: {err}")
                 return
             self._names = [str(x) for x in (body.get("sets") or []) if str(x).strip()]
+            self._avoided = {
+                str(x).casefold()
+                for x in (body.get("avoided") or [])
+                if str(x).strip()
+            }
             self._list.delete(0, tk.END)
             for name in self._names:
-                self._list.insert(tk.END, name)
+                self._list.insert(tk.END, self._set_list_label(name))
             scope = str(body.get("scope") or ("user" if self._whose else "own"))
             owner = str(body.get("user") or self._whose or "").strip()
             if scope != "user" and self._on_set_names is not None:
@@ -295,6 +304,58 @@ class SetsPanel(ttk.Frame):
 
     def _can_delete_sets(self) -> bool:
         return (not self._whose) and self._delete_set is not None
+
+    def _can_avoid_sets(self) -> bool:
+        return (not self._whose) and self._avoid_set is not None
+
+    def _set_list_label(self, name: str) -> str:
+        if name.casefold() in self._avoided:
+            return f"🚫 {name}"
+        return name
+
+    def _refresh_set_list_labels(self) -> None:
+        self._list.delete(0, tk.END)
+        for name in self._names:
+            self._list.insert(tk.END, self._set_list_label(name))
+        if self._selected in self._names:
+            idx = self._names.index(self._selected)
+            self._list.selection_set(idx)
+            self._list.see(idx)
+
+    def _set_avoided(self, name: str, avoided: bool) -> None:
+        if not self._can_avoid_sets() or self._busy:
+            return
+        self._busy = True
+        want = "yes" if avoided else "no"
+        self.meta_var.set(f"Avoided “{name}”: {want}…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") != "sets_avoid_ok":
+                self.meta_var.set(
+                    f"Avoided failed: {body.get('error') or 'failed'}"
+                )
+                return
+            self._avoided = {
+                str(x).casefold()
+                for x in (body.get("avoided_sets") or [])
+                if str(x).strip()
+            }
+            stored = str(body.get("name") or name)
+            if body.get("avoided"):
+                self._avoided.add(stored.casefold())
+            else:
+                self._avoided.discard(stored.casefold())
+            self._refresh_set_list_labels()
+            flag = "yes" if body.get("avoided") else "no"
+            self.meta_var.set(f"Avoided “{stored}”: {flag}")
+            self._on_log(f"Avoided “{stored}”: {flag}")
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Avoided failed: {exc}")
+
+        self._avoid_set(name, avoided, on_ok, on_err)
 
     def _sync_delete_button(self) -> None:
         if self._pending_delete:
@@ -361,9 +422,8 @@ class SetsPanel(ttk.Frame):
                 self._names = [
                     x for x in self._names if x.casefold() != gone.casefold()
                 ]
-                self._list.delete(0, tk.END)
-                for nm in self._names:
-                    self._list.insert(tk.END, nm)
+                self._avoided.discard(gone.casefold())
+                self._refresh_set_list_labels()
                 if self._on_set_names is not None:
                     self._on_set_names(list(self._names))
                 self.meta_var.set(f"Deleted “{gone}” · {count} cards kept")
@@ -407,6 +467,19 @@ class SetsPanel(ttk.Frame):
             menu.add_command(label="Rename…", command=self._rename_selected)
         if self._can_delete_sets():
             menu.add_command(label="Delete set…", command=self._arm_delete)
+        if self._can_avoid_sets():
+            avoid_m = tk.Menu(menu, tearoff=0)
+            name = self._names[idx]
+            is_avoided = name.casefold() in self._avoided
+            avoid_m.add_command(
+                label="Yes" + (" ✓" if is_avoided else ""),
+                command=lambda n=name: self._set_avoided(n, True),
+            )
+            avoid_m.add_command(
+                label="No" + (" ✓" if not is_avoided else ""),
+                command=lambda n=name: self._set_avoided(n, False),
+            )
+            menu.add_cascade(label="Avoided", menu=avoid_m)
         if menu.index("end") is None:
             return
         try:
@@ -492,9 +565,10 @@ class SetsPanel(ttk.Frame):
                     renamed if x.casefold() == old.casefold() else x
                     for x in self._names
                 ]
-                self._list.delete(0, tk.END)
-                for name in self._names:
-                    self._list.insert(tk.END, name)
+                if old.casefold() in self._avoided:
+                    self._avoided.discard(old.casefold())
+                    self._avoided.add(renamed.casefold())
+                self._refresh_set_list_labels()
                 self._selected = renamed
                 if renamed in self._names:
                     i = self._names.index(renamed)
@@ -568,6 +642,7 @@ class SetsPanel(ttk.Frame):
     def clear(self) -> None:
         self._disarm_delete()
         self._names = []
+        self._avoided = set()
         self._selected = ""
         self._list.delete(0, tk.END)
         self.clear_grid()
@@ -821,6 +896,21 @@ class SetsPanel(ttk.Frame):
                 continue
         return None
 
+    def _drop_char(self, char_id: int) -> None:
+        """Remove a trashed card from the current set grid."""
+        cid = int(char_id)
+        before = len(self._items)
+        self._items = [it for it in self._items if int(it.get("id") or 0) != cid]
+        if len(self._items) == before:
+            return
+        if self._gallery is not None and hasattr(self._gallery, "remove_char"):
+            try:
+                if self._gallery.remove_char(cid):
+                    return
+            except Exception:
+                pass
+        self._render_grid(reuse_bytes=True)
+
     def _click_open_image(self, char_id: int) -> None:
         from link_bridge.open_image import open_full_image
 
@@ -877,6 +967,7 @@ class SetsPanel(ttk.Frame):
             on_remove_from_set=self._remove_from_set,
             can_edit_sets=bool(item.get("mine", True)) and not self._whose,
             can_cycle_name=bool(item.get("can_cycle_name")),
+            is_done=bool(item.get("done")),
         )
 
     def _remove_from_set(self, char_id: int, set_name: str) -> None:
@@ -942,6 +1033,10 @@ class SetsPanel(ttk.Frame):
         if action_id == "omni" and self._open_omni_ui is not None:
             self._open_omni_ui(int(char_id))
             return
+        if action_id == "mi_omni":
+            if self._open_omni_ui is not None:
+                self._open_omni_ui(int(char_id))
+            action_id = "mi"
         if self._dm_craft is None:
             if action_id == "omni" and self._open_omni is not None:
                 self._click_omni(char_id)
@@ -967,6 +1062,8 @@ class SetsPanel(ttk.Frame):
                     if str(action_id).startswith("stadd:"):
                         # Multi-set: adding elsewhere keeps the card in this set.
                         self._note_set_used(str(action_id).split(":", 1)[1])
+                    if action_id in ("tr", "ptr"):
+                        self._drop_char(int(char_id))
                 elif self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram

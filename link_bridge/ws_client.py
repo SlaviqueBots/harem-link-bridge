@@ -218,6 +218,10 @@ class BridgeClient:
             "sets_rename_err",
             "sets_delete_ok",
             "sets_delete_err",
+            "sets_present_ok",
+            "sets_present_err",
+            "sets_avoid_ok",
+            "sets_avoid_err",
             "register_cup_ok",
             "register_cup_err",
             "dm_craft_ok",
@@ -284,6 +288,10 @@ class BridgeClient:
                 key = "sets_rename"
             elif op.startswith("sets_delete"):
                 key = "sets_delete"
+            elif op.startswith("sets_present"):
+                key = "sets_present"
+            elif op.startswith("sets_avoid"):
+                key = "sets_avoid"
             else:
                 key = "sets_list"
             fut = self._pending.pop(key, None)
@@ -353,6 +361,19 @@ class BridgeClient:
             {
                 "op": "sets_delete",
                 "name": (name or "").strip(),
+            },
+            timeout=timeout,
+        )
+
+    async def request_sets_avoid(
+        self, name: str, avoided: bool, *, timeout: float = 20.0
+    ) -> dict[str, Any]:
+        return await self._request(
+            "sets_avoid",
+            {
+                "op": "sets_avoid",
+                "name": (name or "").strip(),
+                "avoided": bool(avoided),
             },
             timeout=timeout,
         )

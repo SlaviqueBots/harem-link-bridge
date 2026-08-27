@@ -63,23 +63,61 @@ _DIS_FG = "#777777"
 _MODE_BG = "#5a3d2a"
 _ACCENT = "#5865f2"
 
-# Rough wall-clock ETAs (seconds) for heavy image fetches — progress creeps to ~92%.
-_FETCH_ETA_SEC: dict[str, float] = {
-    "rs": 14.0,
-    "rm": 16.0,
-    "sl": 14.0,
-    "sm": 16.0,
-    "po": 12.0,
-    "pa": 14.0,
-    "au": 18.0,
-    "am": 20.0,
-    "ti": 16.0,
-    "uo": 5.0,
-    "ld": 4.0,
-    "rj": 22.0,
-    "mi": 3.0,
-    "cp": 2.0,
+# Realistic initial wall-clock ETAs (seconds) for Omni operations.
+# These adapt dynamically at runtime based on measured server response times.
+_DEFAULT_ETA_SEC: dict[str, float] = {
+    "rs": 3.2,
+    "rm": 4.5,
+    "sl": 3.2,
+    "sm": 4.5,
+    "po": 3.0,
+    "pa": 4.5,
+    "au": 4.0,
+    "am": 5.0,
+    "ti": 3.5,
+    "uo": 2.0,
+    "ld": 1.8,
+    "rj": 5.5,
+    "mi": 1.2,
+    "cp": 1.2,
+    "dn": 0.8,
+    "ud": 0.8,
+    "hi": 0.8,
+    "sh": 0.8,
+    "fl": 0.8,
+    "flset": 0.8,
+    "rfl": 0.8,
 }
+
+_ADAPTIVE_ETA: dict[str, float] = dict(_DEFAULT_ETA_SEC)
+
+
+def calculate_omni_progress(elapsed: float, eta: float) -> float:
+    """Calculate smooth progress percentage [0..100] based on elapsed time and expected ETA."""
+    el = max(0.0, float(elapsed))
+    target_eta = max(0.6, float(eta))
+    ratio = el / target_eta
+    if ratio <= 1.0:
+        # Smooth ease-out curve from 3% to 88% over eta
+        frac = 1.0 - (1.0 - ratio) ** 1.6
+        return float(min(88.0, 3.0 + 85.0 * frac))
+    # Beyond eta: decelerate toward 95% while waiting for server response
+    over = el - target_eta
+    frac = 1.0 - math.exp(-over / (target_eta * 0.9))
+    return float(min(95.0, 88.0 + 7.0 * frac))
+
+
+def update_adaptive_eta(op: str, measured_elapsed: float) -> float:
+    """Update exponentially weighted moving average ETA for operation."""
+    op_key = str(op or "").strip()
+    if not op_key:
+        return 3.0
+    measured = max(0.2, float(measured_elapsed))
+    prev = _ADAPTIVE_ETA.get(op_key, _DEFAULT_ETA_SEC.get(op_key, 3.0))
+    # Exponential moving average with 35% weight on new measurement, clamped between 0.6s and 45s
+    new_val = max(0.6, min(45.0, 0.65 * prev + 0.35 * measured))
+    _ADAPTIVE_ETA[op_key] = new_val
+    return new_val
 
 
 def _plain_caption(raw: str) -> str:
@@ -417,10 +455,11 @@ def _apply_omni_theme(root: tk.Misc, mode: str | None = None) -> dict[str, str]:
     style.configure(
         "Omni.Horizontal.TProgressbar",
         background=accent,
-        troughcolor=bg2,
+        troughcolor=bg,
         bordercolor=bg,
         lightcolor=accent,
         darkcolor=accent,
+        thickness=3,
     )
     try:
         root.configure(bg=bg)
@@ -455,6 +494,141 @@ def _section(parent: tk.Misc, title: str) -> tuple[ttk.Frame, ttk.Frame]:
 def _chunk(specs: list[dict[str, Any]], cols: int) -> list[list[dict[str, Any]]]:
     cols = max(1, int(cols))
     return [specs[i : i + cols] for i in range(0, len(specs), cols)]
+
+
+def _craft_slot_key(spec: dict[str, Any]) -> tuple[str, str]:
+    op = str(spec.get("op") or "").strip()
+    arg = str(spec.get("arg") or "").strip()
+    return (op, arg)
+
+
+_DANBOORU_CRAFT_SLOTS: tuple[tuple[tuple[str, str] | None, ...], ...] = (
+    (
+        ("rs", "G"), ("rs", "S"), ("rs", "Q"), ("rs", "E"),
+        ("au", ""), ("am", ""), ("uo", ""), ("cp", ""),
+    ),
+    (
+        ("rm", "G"), ("rm", "S"), ("rm", "Q"), ("rm", "E"),
+        ("po", ""), ("pa", ""), ("ti", ""), ("rf", ""),
+    ),
+)
+
+_R34_CRAFT_SLOTS: tuple[tuple[tuple[str, str] | None, ...], ...] = (
+    (
+        ("rs", ""), ("rm", "M"), ("sl", ""), ("sm", ""),
+        ("au", ""), ("am", ""), ("uo", ""), ("cp", ""),
+    ),
+    (
+        ("po", ""), ("pa", ""), ("ti", ""), ("rf", ""),
+        None, None, None, None,
+    ),
+)
+
+
+def _uses_r34_craft_slots(crafts: list[dict[str, Any]]) -> bool:
+    keys = {_craft_slot_key(s) for s in crafts}
+    if any(op in ("sl", "sm") for op, _arg in keys):
+        return True
+    if ("rs", "") in keys:
+        return True
+    return False
+
+
+def stable_omni_craft_rows(
+    crafts: list[dict[str, Any]],
+) -> list[list[dict[str, Any] | None]]:
+    """Fixed OmniCraft slots so missing GSQE/title/etc. leave holes instead of reflow."""
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for spec in crafts:
+        key = _craft_slot_key(spec)
+        if key[0] and key not in by_key:
+            by_key[key] = spec
+    template = _R34_CRAFT_SLOTS if _uses_r34_craft_slots(crafts) else _DANBOORU_CRAFT_SLOTS
+    used: set[tuple[str, str]] = set()
+    rows: list[list[dict[str, Any] | None]] = []
+    for slot_row in template:
+        out: list[dict[str, Any] | None] = []
+        for slot in slot_row:
+            if slot is None:
+                out.append(None)
+                continue
+            spec = by_key.get(slot)
+            if spec is not None:
+                used.add(slot)
+                out.append(spec)
+            else:
+                out.append(None)
+        rows.append(out)
+    leftovers = [s for s in crafts if _craft_slot_key(s) not in used]
+    if leftovers:
+        for chunk in _chunk(leftovers, 8):
+            pad: list[dict[str, Any] | None] = list(chunk)
+            while len(pad) < 8:
+                pad.append(None)
+            rows.append(pad)
+    while rows and all(cell is None for cell in rows[-1]):
+        rows.pop()
+    return rows
+
+
+def repeat_key_label(keysym: str) -> str:
+    key = str(keysym or "space").strip().lower() or "space"
+    if key == "space":
+        return "Space"
+    if len(key) == 1:
+        return key.upper()
+    return key.replace("_", " ").title()
+
+
+def event_matches_repeat_key(event: Any, keysym: str) -> bool:
+    want = str(keysym or "space").strip().lower() or "space"
+    got = str(getattr(event, "keysym", "") or "").strip().lower()
+    if want == "space":
+        return got == "space"
+    return got == want
+
+
+def find_omni_repeat_spec(
+    buttons: list[Any],
+    *,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Prefer the green (lit) control; else the last local click if still present."""
+    lit: list[dict[str, Any]] = []
+    present: list[dict[str, Any]] = []
+    for row in buttons or []:
+        if not isinstance(row, list):
+            continue
+        for btn in row:
+            if not isinstance(btn, dict):
+                continue
+            if not str(btn.get("op") or "").strip():
+                continue
+            present.append(btn)
+            if btn.get("lit"):
+                lit.append(btn)
+    if lit:
+        return lit[0]
+    if fallback:
+        fk = _craft_slot_key(fallback)
+        for btn in present:
+            if _craft_slot_key(btn) == fk:
+                return btn
+    return None
+
+
+def _dispatch_omni_keypress(event: Any) -> str | None:
+    widget = getattr(event, "widget", None)
+    if widget is None or isinstance(widget, str):
+        return None
+    try:
+        top = widget.winfo_toplevel()
+    except Exception:
+        return None
+    handler = getattr(top, "_omni_keypress", None)
+    if handler is None:
+        return None
+    return handler(event)
 
 
 class OmniPanel(ttk.Frame):
@@ -511,12 +685,14 @@ class OmniPanel(ttk.Frame):
         self._flow_cols: tuple[int, int, int] = (0, 0, 0)
         self._state: dict[str, Any] = {}
         self._btns: list[tk.Button] = []
+        self._button_render_sig: tuple[Any, ...] | None = None
         self._anim_after: str | None = None
         self._anim_frames: list[Any] = []
         self._anim_delays: list[int] = []
         self._anim_idx = 0
         self._anim_data: bytes | None = None
         self._img_video_still = False
+        self._last_repeat: dict[str, Any] | None = None
 
         body = ttk.Frame(self, style="Omni.TFrame")
         body.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
@@ -549,7 +725,7 @@ class OmniPanel(ttk.Frame):
         self._prog_after: str | None = None
         self._prog_t0 = 0.0
         self._prog_eta = 12.0
-        self._prog.pack_forget()
+        self._prog.pack(fill=tk.X, pady=(2, 2))
 
         craft_title = "Exclude tag" if self._mode == "refine" else "Alter image"
         craft_wrap, self._craft_fr = _section(controls, craft_title)
@@ -1037,17 +1213,62 @@ class OmniPanel(ttk.Frame):
         ):
             self.after(80, lambda: self._on_wip_next(self._char_id))
 
+    def _flash_center_notice(self, title: str, sub: str = "") -> None:
+        try:
+            old = getattr(self, "_notice", None)
+            if old is not None:
+                old.destroy()
+        except Exception:
+            pass
+        wrap = tk.Frame(
+            self._left,
+            bg="#0d6b38",
+            highlightthickness=5,
+            highlightbackground="#9dffc4",
+        )
+        title_pady = (22, 6) if sub else (28, 28)
+        tk.Label(
+            wrap,
+            text=title,
+            font=("Segoe UI", 36, "bold"),
+            bg="#0d6b38",
+            fg="#ffffff",
+        ).pack(padx=48, pady=title_pady)
+        if sub:
+            tk.Label(
+                wrap,
+                text=sub,
+                font=("Segoe UI", 13),
+                bg="#0d6b38",
+                fg="#d7ffe8",
+            ).pack(pady=(0, 18))
+        wrap.place(relx=0.5, rely=0.48, anchor="center")
+        self._notice = wrap
+
+        def _drop() -> None:
+            try:
+                if wrap.winfo_exists():
+                    wrap.destroy()
+            except Exception:
+                pass
+            if getattr(self, "_notice", None) is wrap:
+                self._notice = None
+
+        self.after(3200, _drop)
+
     def _start_progress(self, op: str) -> None:
         import time
 
         self._stop_progress(done=False)
-        self._prog_eta = float(_FETCH_ETA_SEC.get(op, 12.0))
+        self._prog_op = str(op or "")
+        self._prog_eta = float(
+            _ADAPTIVE_ETA.get(self._prog_op, _DEFAULT_ETA_SEC.get(self._prog_op, 3.0))
+        )
         self._prog_t0 = time.monotonic()
         try:
-            self._prog.pack(fill=tk.X, pady=(0, 2), before=self._craft_fr)
+            self._prog["value"] = 3.0
         except Exception:
             pass
-        self._prog["value"] = 2
         self._tick_progress()
 
     def _tick_progress(self) -> None:
@@ -1057,17 +1278,24 @@ class OmniPanel(ttk.Frame):
         if not self._busy:
             return
         elapsed = max(0.0, time.monotonic() - self._prog_t0)
-        eta = max(2.0, self._prog_eta)
-        # Ease toward 92% over ETA; linger until the response arrives.
-        frac = 1.0 - math.exp(-elapsed / (eta * 0.55))
-        value = min(92.0, 2.0 + 90.0 * frac)
+        value = calculate_omni_progress(elapsed, self._prog_eta)
         try:
             self._prog["value"] = value
         except Exception:
             return
-        self._prog_after = self.after(80, self._tick_progress)
+        self._prog_after = self.after(40, self._tick_progress)
+
+    def _reset_prog_zero(self) -> None:
+        if self._busy:
+            return
+        try:
+            self._prog["value"] = 0
+        except Exception:
+            pass
 
     def _stop_progress(self, *, done: bool) -> None:
+        import time
+
         if self._prog_after is not None:
             try:
                 self.after_cancel(self._prog_after)
@@ -1076,9 +1304,14 @@ class OmniPanel(ttk.Frame):
             self._prog_after = None
         try:
             if done:
+                op = getattr(self, "_prog_op", "")
+                t0 = getattr(self, "_prog_t0", 0.0)
+                if op and t0 > 0.0:
+                    update_adaptive_eta(op, time.monotonic() - t0)
                 self._prog["value"] = 100
-            self._prog.pack_forget()
-            self._prog["value"] = 0
+                self.after(220, self._reset_prog_zero)
+            else:
+                self._prog["value"] = 0
         except Exception:
             pass
 
@@ -1146,6 +1379,40 @@ class OmniPanel(ttk.Frame):
             "font": ("Segoe UI", 9),
         }
 
+    def _refresh_button(self, btn: tk.Button, spec: dict[str, Any]) -> None:
+        hidden = bool(self._state.get("hidden"))
+        done = bool(self._state.get("done"))
+        text = _pretty_label(
+            str(spec.get("text") or " "),
+            str(spec.get("op") or ""),
+            hidden=hidden,
+            done=done,
+        )
+        enabled = bool(spec.get("enabled")) and not self._busy
+        op = str(spec.get("op") or "")
+        arg = spec.get("arg")
+        url = str(spec.get("url") or "")
+        urls = [str(u).strip() for u in (spec.get("urls") or []) if str(u).strip()]
+        if urls:
+            cmd = lambda us=urls: self._open_urls(us)
+        elif url and not op:
+            cmd = lambda u=url: self._open_url(u)
+        elif op:
+            cmd = lambda o=op, a=arg, t=text: self._click(o, a, t)
+        else:
+            cmd = lambda: None
+            enabled = False
+        btn.configure(
+            text=text,
+            command=cmd,
+            cursor="hand2" if enabled else "arrow",
+            state=tk.NORMAL if enabled else tk.DISABLED,
+            highlightthickness=1 if spec.get("lit") else 0,
+            highlightbackground=_LIT_BG,
+            highlightcolor=_LIT_BG,
+            **self._style_for(spec, enabled=enabled),
+        )
+
     def _place_row(self, parent: tk.Misc, specs: list[dict[str, Any]], row: int) -> None:
         """Equal-width buttons in one grid row."""
         hidden = bool(self._state.get("hidden"))
@@ -1191,6 +1458,71 @@ class OmniPanel(ttk.Frame):
             btn.grid(row=row, column=c, sticky="nsew", padx=1, pady=1)
             self._btns.append(btn)
 
+    def _place_slot_cell(
+        self, parent: tk.Misc, spec: dict[str, Any] | None, row: int, col: int
+    ) -> None:
+        if spec is None:
+            sp = tk.Frame(parent, height=28, highlightthickness=0, bd=0)
+            try:
+                sp.configure(bg=parent.winfo_toplevel().cget("bg") or _BG)
+            except Exception:
+                pass
+            sp.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
+            return
+        hidden = bool(self._state.get("hidden"))
+        done = bool(self._state.get("done"))
+        text = _pretty_label(
+            str(spec.get("text") or " "),
+            str(spec.get("op") or ""),
+            hidden=hidden,
+            done=done,
+        )
+        enabled = bool(spec.get("enabled")) and not self._busy
+        op = str(spec.get("op") or "")
+        arg = spec.get("arg")
+        url = str(spec.get("url") or "")
+        urls = [str(u).strip() for u in (spec.get("urls") or []) if str(u).strip()]
+        style = self._style_for(spec, enabled=enabled)
+        if urls:
+            cmd = lambda us=urls: self._open_urls(us)
+        elif url and not op:
+            cmd = lambda u=url: self._open_url(u)
+        elif op:
+            cmd = lambda o=op, a=arg, t=text: self._click(o, a, t)
+        else:
+            cmd = lambda: None
+            enabled = False
+        btn = tk.Button(
+            parent,
+            text=text,
+            command=cmd,
+            padx=4,
+            pady=3,
+            cursor="hand2" if enabled else "arrow",
+            state=tk.NORMAL if enabled else tk.DISABLED,
+            highlightthickness=1 if spec.get("lit") else 0,
+            highlightbackground=_LIT_BG,
+            highlightcolor=_LIT_BG,
+            **style,
+        )
+        btn.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
+        self._btns.append(btn)
+
+    def _place_stable_grid(
+        self, parent: tk.Misc, grid: list[list[dict[str, Any] | None]]
+    ) -> None:
+        for child in list(parent.winfo_children()):
+            child.destroy()
+        cols = 8
+        for c in range(cols):
+            parent.columnconfigure(c, weight=1, uniform=f"omni{id(parent)}")
+        for r, row in enumerate(grid):
+            cells = list(row[:cols])
+            while len(cells) < cols:
+                cells.append(None)
+            for c, spec in enumerate(cells):
+                self._place_slot_cell(parent, spec, r, c)
+
     def _place_flow(self, parent: tk.Misc, specs: list[dict[str, Any]], cols: int) -> None:
         """Pack buttons into a dense N-column grid (no half-empty Telegram rows)."""
         for child in list(parent.winfo_children()):
@@ -1204,7 +1536,6 @@ class OmniPanel(ttk.Frame):
             self._place_row(parent, row, i)
 
     def _render_buttons(self, rows: list[Any]) -> None:
-        self._clear_btns()
         crafts: list[dict[str, Any]] = []
         status: list[dict[str, Any]] = []
         links: list[dict[str, Any]] = []
@@ -1233,9 +1564,6 @@ class OmniPanel(ttk.Frame):
                     status.append(btn)
                 else:
                     crafts.append(btn)
-        # Keep reshape ± paired when reflowing.
-        paired = _coalesce_reshape_rows([[c] for c in crafts])
-        crafts = [b for row in paired for b in row]
         if self._mode == "omni" and self._dm_preview is not None:
             status.append(
                 {
@@ -1250,9 +1578,48 @@ class OmniPanel(ttk.Frame):
             )
         craft_cols, status_cols, link_cols = self._flow_col_counts()
         self._flow_cols = (craft_cols, status_cols, link_cols)
-        self._place_flow(self._craft_fr, crafts, craft_cols)
+        craft_grid: list[list[dict[str, Any] | None]] | None = None
+        if self._mode == "omni":
+            craft_grid = stable_omni_craft_rows(crafts)
+        else:
+            paired = _coalesce_reshape_rows([[c] for c in crafts])
+            crafts = [b for row in paired for b in row]
+
+        visible_crafts = (
+            [cell for row in craft_grid for cell in row if cell is not None]
+            if craft_grid is not None
+            else crafts
+        )
+        flat_specs = visible_crafts + status + links
+        craft_mask = (
+            tuple(tuple(cell is not None for cell in row) for row in craft_grid)
+            if craft_grid is not None
+            else (len(crafts), craft_cols)
+        )
+        render_sig = (
+            self._mode,
+            craft_mask,
+            len(status),
+            len(links),
+            status_cols,
+            link_cols,
+        )
+        if (
+            render_sig == self._button_render_sig
+            and len(self._btns) == len(flat_specs)
+        ):
+            for btn, spec in zip(self._btns, flat_specs):
+                self._refresh_button(btn, spec)
+            return
+
+        self._clear_btns()
+        if craft_grid is not None:
+            self._place_stable_grid(self._craft_fr, craft_grid)
+        else:
+            self._place_flow(self._craft_fr, crafts, craft_cols)
         self._place_flow(self._status_fr, status, status_cols)
         self._place_flow(self._link_fr, links, link_cols)
+        self._button_render_sig = render_sig
 
     def _click_dm_preview(self) -> None:
         if self._busy or self._dm_preview is None:
@@ -1261,7 +1628,6 @@ class OmniPanel(ttk.Frame):
         self._busy_gen += 1
         gen = self._busy_gen
         self._status_var.set("DM preview…")
-        self._render_buttons(self._state.get("buttons") or [])
 
         def on_ok(body: dict) -> None:
             if gen != self._busy_gen:
@@ -1272,14 +1638,12 @@ class OmniPanel(ttk.Frame):
                 self._on_log(f"omni DM preview #{self._char_id}")
             else:
                 self._status_var.set(str(body.get("error") or "DM failed"))
-            self._render_buttons(self._state.get("buttons") or [])
 
         def on_err(exc: BaseException) -> None:
             if gen != self._busy_gen:
                 return
             self._busy = False
             self._status_var.set(f"DM failed: {exc}")
-            self._render_buttons(self._state.get("buttons") or [])
 
         self._dm_preview(self._char_id, on_ok, on_err)
 
@@ -1309,13 +1673,13 @@ class OmniPanel(ttk.Frame):
         if op == "fl":
             self._edit_flavour()
             return
+        self._last_repeat = {"op": op, "arg": arg, "text": label, "lit": True}
         arg_s = None if arg is None or str(arg).strip() == "" else str(arg).strip()
         self._busy = True
         self._busy_gen += 1
         gen = self._busy_gen
         self._status_var.set(f"{label}…")
         self._start_progress(op)
-        self._render_buttons(self._state.get("buttons") or [])
         prev_before = self._media_url()
 
         def _unstick() -> None:
@@ -1324,7 +1688,6 @@ class OmniPanel(ttk.Frame):
             self._busy = False
             self._stop_progress(done=False)
             self._status_var.set("Still working — tap Refresh if stuck.")
-            self._render_buttons(self._state.get("buttons") or [])
 
         self.after(150000, _unstick)
 
@@ -1339,14 +1702,14 @@ class OmniPanel(ttk.Frame):
                 )
                 self._apply_state(body, acquired=acquired)
                 self._on_log(f"{self._mode} {op} #{self._char_id}: {body.get('detail') or 'ok'}")
+                if op == "mi":
+                    self._flash_center_notice("MIRRORED")
             else:
                 self._stop_progress(done=False)
                 err = body.get("error") or body.get("detail") or "failed"
                 self._status_var.set(str(err))
                 if body.get("buttons"):
                     self._apply_state(body, acquired=False)
-                else:
-                    self._render_buttons(self._state.get("buttons") or [])
 
         def on_err(exc: BaseException) -> None:
             if gen != self._busy_gen:
@@ -1354,9 +1717,24 @@ class OmniPanel(ttk.Frame):
             self._busy = False
             self._stop_progress(done=False)
             self._status_var.set(f"Failed: {exc}")
-            self._render_buttons(self._state.get("buttons") or [])
 
         self._tap(self._char_id, op, arg_s, on_ok, on_err, self._mode)
+
+    def repeat_last_craft(self) -> None:
+        spec = find_omni_repeat_spec(
+            self._state.get("buttons") or [],
+            fallback=self._last_repeat,
+        )
+        if spec is None:
+            self._status_var.set("No last craft to repeat")
+            return
+        text = _pretty_label(
+            str(spec.get("text") or "Repeat"),
+            str(spec.get("op") or ""),
+            hidden=bool(self._state.get("hidden")),
+            done=bool(self._state.get("done")),
+        )
+        self._click(str(spec.get("op") or ""), spec.get("arg"), text)
 
     def _edit_flavour(self) -> None:
         from link_bridge.text_edit_dialog import ask_text
@@ -1411,11 +1789,15 @@ class OmniHost(tk.Toplevel):
         full_image_set: Callable[[bool], None] | None = None,
         get_window_geo: Callable[[], str] | None = None,
         set_window_geo: Callable[[str], None] | None = None,
+        get_window_state: Callable[[], str] | None = None,
+        set_window_state: Callable[[str], None] | None = None,
         on_log: Callable[[str], None] | None = None,
         on_done_changed: Callable[[int, bool], None] | None = None,
         fetch_undone: Callable[..., None] | None = None,
         dm_preview: Callable[[int, OkCb, ErrCb], None] | None = None,
         on_media_changed: Callable[[int, dict[str, Any]], None] | None = None,
+        repeat_key_get: Callable[[], str] | None = None,
+        repeat_key_set: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
         self.title("Omnicraft")
@@ -1437,11 +1819,20 @@ class OmniHost(tk.Toplevel):
         self._set_text_geo = set_text_geo
         self._get_window_geo = get_window_geo or (lambda: "")
         self._set_window_geo = set_window_geo
+        self._get_window_state = get_window_state or (lambda: "zoomed")
+        self._set_window_state = set_window_state
+        self._want_zoomed = (
+            str(self._get_window_state() or "zoomed").strip().lower() == "zoomed"
+        )
         self._on_log = on_log or (lambda _m: None)
         self._on_done_changed = on_done_changed
         self._fetch_undone = fetch_undone
         self._dm_preview = dm_preview
         self._on_media_changed = on_media_changed
+        self._repeat_key_get = repeat_key_get or (lambda: "space")
+        self._repeat_key_set = repeat_key_set or (lambda _k: None)
+        self._capturing_repeat = False
+        self._omni_keypress = self._on_omni_key
         self._tabs: dict[tuple[int, str], tuple[ttk.Frame, OmniPanel]] = {}
         self._wip_busy = False
         self._geo_save_after: str | None = None
@@ -1467,6 +1858,14 @@ class OmniHost(tk.Toplevel):
             variable=self._full_var,
             command=self._on_full_image_toggle,
         ).pack(side=tk.LEFT, padx=(0, 8))
+        self._repeat_btn = ttk.Button(
+            head,
+            text=f"Repeat: {repeat_key_label(self._repeat_key_get())}",
+            command=self._start_capture_repeat_key,
+            width=16,
+            style="Omni.TButton",
+        )
+        self._repeat_btn.pack(side=tk.LEFT, padx=(0, 8))
         self._wip_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             head,
@@ -1485,9 +1884,139 @@ class OmniHost(tk.Toplevel):
         self._nb = ttk.Notebook(top, style="Omni.TNotebook")
         self._nb.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._restore_or_center()
+        if self._want_zoomed:
+            try:
+                self.state("zoomed")
+            except Exception:
+                self._restore_or_center()
+        else:
+            self._restore_or_center()
+        self.after_idle(self._restore_window_state)
+        self.after(100, self._restore_window_state)
         self.bind("<Configure>", self._on_configure)
+        self.bind("<F11>", lambda _e: self.toggle_fullscreen())
         self.after(250, self._arm_geo_save)
+        self._bind_omni_keys()
+
+    def _bind_omni_keys(self) -> None:
+        try:
+            root = self.master.winfo_toplevel()
+        except Exception:
+            root = self
+        if getattr(root, "_omni_keys_bound", False):
+            return
+        root.bind_all("<KeyPress>", _dispatch_omni_keypress, add="+")
+        try:
+            root._omni_keys_bound = True  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def _sync_repeat_label(self) -> None:
+        try:
+            if self._capturing_repeat:
+                self._repeat_btn.configure(text="Press a key…")
+            else:
+                self._repeat_btn.configure(
+                    text=f"Repeat: {repeat_key_label(self._repeat_key_get())}"
+                )
+        except Exception:
+            pass
+
+    def _start_capture_repeat_key(self) -> None:
+        self._capturing_repeat = True
+        self._sync_repeat_label()
+
+    def _current_panel(self) -> OmniPanel | None:
+        try:
+            cur = self._nb.select()
+        except Exception:
+            return None
+        if not cur:
+            return None
+        for _key, (fr, panel) in self._tabs.items():
+            if str(fr) == str(cur):
+                return panel
+        return None
+
+    def toggle_fullscreen(self) -> None:
+        try:
+            is_fs = bool(self.attributes("-fullscreen"))
+        except Exception:
+            is_fs = False
+        try:
+            if is_fs:
+                self.attributes("-fullscreen", False)
+                self.state("zoomed")
+                self._want_zoomed = True
+                if self._set_window_state is not None:
+                    self._set_window_state("zoomed")
+            else:
+                cur = str(self.state() or "normal")
+                if cur == "zoomed":
+                    self.attributes("-fullscreen", True)
+                else:
+                    self.state("zoomed")
+                    self._want_zoomed = True
+                    if self._set_window_state is not None:
+                        self._set_window_state("zoomed")
+        except Exception:
+            pass
+
+    def _on_omni_key(self, event: Any) -> str | None:
+        widget = getattr(event, "widget", None)
+        if widget is not None and not isinstance(widget, str):
+            try:
+                cls = widget.winfo_class()
+            except Exception:
+                cls = ""
+            if cls in ("Entry", "TEntry", "Text", "TCombobox"):
+                try:
+                    if str(widget.cget("state") or "").lower() != "disabled":
+                        return None
+                except Exception:
+                    return None
+        keysym = str(getattr(event, "keysym", "") or "")
+        if keysym.lower() == "f11":
+            self.toggle_fullscreen()
+            return "break"
+        if keysym.lower() == "escape":
+            try:
+                if bool(self.attributes("-fullscreen")):
+                    self.attributes("-fullscreen", False)
+                    self.state("zoomed")
+                    return "break"
+            except Exception:
+                pass
+        if self._capturing_repeat:
+            if keysym.lower() in (
+                "shift_l",
+                "shift_r",
+                "control_l",
+                "control_r",
+                "alt_l",
+                "alt_r",
+                "caps_lock",
+                "num_lock",
+                "scroll_lock",
+            ):
+                return "break"
+            if keysym.lower() == "escape":
+                self._capturing_repeat = False
+                self._sync_repeat_label()
+                return "break"
+            from link_bridge.config import _normalize_omni_repeat_key
+
+            key = _normalize_omni_repeat_key(keysym)
+            self._repeat_key_set(key)
+            self._capturing_repeat = False
+            self._sync_repeat_label()
+            return "break"
+        if not event_matches_repeat_key(event, self._repeat_key_get()):
+            return None
+        panel = self._current_panel()
+        if panel is not None:
+            panel.repeat_last_craft()
+        return "break"
 
     def apply_ui_theme(self, mode: str) -> None:
         """Follow the main app Dark/Light toggle."""
@@ -1519,6 +2048,15 @@ class OmniHost(tk.Toplevel):
                 pass
         _center_window(self, 980, 700)
 
+    def _restore_window_state(self) -> None:
+        if not self._want_zoomed:
+            return
+        try:
+            if str(self.state()) != "zoomed":
+                self.state("zoomed")
+        except Exception:
+            pass
+
     def _on_configure(self, event=None) -> None:
         if event is not None and getattr(event, "widget", None) is not self:
             return
@@ -1533,14 +2071,21 @@ class OmniHost(tk.Toplevel):
 
     def _persist_geometry(self) -> None:
         self._geo_save_after = None
-        if self._set_window_geo is None:
-            return
         try:
-            geo = self.geometry()
+            state = str(self.state() or "normal")
         except Exception:
-            return
-        if geo:
-            self._set_window_geo(geo)
+            state = "normal"
+        norm_state = "zoomed" if state == "zoomed" else "normal"
+        self._want_zoomed = norm_state == "zoomed"
+        if self._set_window_state is not None:
+            self._set_window_state(norm_state)
+        if state != "zoomed" and self._set_window_geo is not None:
+            try:
+                geo = self.geometry()
+            except Exception:
+                geo = ""
+            if geo:
+                self._set_window_geo(geo)
 
     def _on_close(self) -> None:
         self._persist_geometry()

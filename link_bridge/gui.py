@@ -108,7 +108,7 @@ class LinkBridgeApp(tk.Tk):
         self._browser_hook = None
         self._geo_save_after: str | None = None
         self._geo_ready = False
-        self._want_zoomed = (self.cfg.window_state or "normal").strip().lower() == "zoomed"
+        self._want_zoomed = (self.cfg.window_state or "zoomed").strip().lower() == "zoomed"
         try:
             from link_bridge.thumb_grid import enable_default_disk_cache
 
@@ -171,6 +171,7 @@ class LinkBridgeApp(tk.Tk):
             list_sets=self._sets_list,
             rename_set=self._sets_rename,
             delete_set=self._sets_delete,
+            avoid_set=self._sets_avoid,
             present_set=self._sets_present,
             fetch_tamed=self._roster_fetch_tamed,
             fetch_market=self._market_fetch_page,
@@ -349,6 +350,27 @@ class LinkBridgeApp(tk.Tk):
             command=self._on_prefer_original_toggle,
         ).pack(side=tk.LEFT)
 
+        opts_fs = ttk.Frame(root)
+        opts_fs.pack(fill=tk.X, **pad)
+        self.main_maximized_var = tk.BooleanVar(
+            value=str(self.cfg.window_state or "zoomed").strip().lower() == "zoomed"
+        )
+        ttk.Checkbutton(
+            opts_fs,
+            text="Bridge starts maximized (fullscreen)",
+            variable=self.main_maximized_var,
+            command=self._on_main_maximized_toggle,
+        ).pack(side=tk.LEFT)
+        self.omni_maximized_var = tk.BooleanVar(
+            value=str(self.cfg.omni_window_state or "zoomed").strip().lower() == "zoomed"
+        )
+        ttk.Checkbutton(
+            opts_fs,
+            text="Omnicraft starts maximized",
+            variable=self.omni_maximized_var,
+            command=self._on_omni_maximized_toggle,
+        ).pack(side=tk.LEFT, padx=(16, 0))
+
         theme_row = ttk.Frame(root)
         theme_row.pack(fill=tk.X, **pad)
         ttk.Label(theme_row, text="Appearance").pack(side=tk.LEFT)
@@ -509,6 +531,14 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
         self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
         self.cfg.prefer_original_open = bool(self.prefer_original_var.get())
+        if hasattr(self, "main_maximized_var"):
+            self.cfg.window_state = (
+                "zoomed" if bool(self.main_maximized_var.get()) else "normal"
+            )
+        if hasattr(self, "omni_maximized_var"):
+            self.cfg.omni_window_state = (
+                "zoomed" if bool(self.omni_maximized_var.get()) else "normal"
+            )
         from link_bridge.config import _clamp_preview_scale, _clamp_scroll_speed
         from link_bridge.theme import normalize_theme
 
@@ -673,6 +703,35 @@ class LinkBridgeApp(tk.Tk):
             if self.cfg.prefer_original_open
             else "Left-click: chat/sample URL."
         )
+
+    def _on_main_maximized_toggle(self) -> None:
+        val = "zoomed" if bool(self.main_maximized_var.get()) else "normal"
+        self.cfg.window_state = val
+        self._want_zoomed = val == "zoomed"
+        try:
+            self.state(val)
+        except Exception:
+            pass
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        self._append_log(f"Bridge window state: {val}")
+
+    def _on_omni_maximized_toggle(self) -> None:
+        val = "zoomed" if bool(self.omni_maximized_var.get()) else "normal"
+        self.cfg.omni_window_state = val
+        host = getattr(self, "_omni_host", None)
+        if host is not None and host.winfo_exists():
+            try:
+                host.state(val)
+            except Exception:
+                pass
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        self._append_log(f"Omnicraft default state: {val}")
 
     def _save_text_edit_geometry(self, geo: str) -> None:
         text = (geo or "").strip()
@@ -976,6 +1035,13 @@ class LinkBridgeApp(tk.Tk):
             on_err,
         )
 
+    def _sets_avoid(self, name: str, avoided: bool, on_ok, on_err) -> None:
+        self._schedule_coro(
+            lambda c: c.request_sets_avoid(name, avoided),
+            on_ok,
+            on_err,
+        )
+
     def _sets_present(self, name: str, on_ok, on_err) -> None:
         target = (self.cfg.middle_click_target or "group").strip().lower()
         self._schedule_coro(
@@ -1064,6 +1130,10 @@ class LinkBridgeApp(tk.Tk):
                 full_image_set=self._set_omni_full_image,
                 get_window_geo=lambda: str(self.cfg.omni_window_geometry or ""),
                 set_window_geo=self._save_omni_window_geometry,
+                get_window_state=lambda: str(
+                    self.cfg.omni_window_state or "zoomed"
+                ),
+                set_window_state=self._save_omni_window_state,
                 get_text_geo=lambda: str(self.cfg.text_edit_geometry or ""),
                 set_text_geo=self._save_text_edit_geometry,
                 on_log=self._append_log,
@@ -1071,6 +1141,8 @@ class LinkBridgeApp(tk.Tk):
                 fetch_undone=self._omni_fetch_undone,
                 dm_preview=self._omni_dm_preview,
                 on_media_changed=self._on_omni_media_changed,
+                repeat_key_get=lambda: str(self.cfg.omni_repeat_key or "space"),
+                repeat_key_set=self._set_omni_repeat_key,
             )
             self._omni_host = host
 
@@ -1147,11 +1219,35 @@ class LinkBridgeApp(tk.Tk):
         except Exception:
             pass
 
+    def _set_omni_repeat_key(self, key: str) -> None:
+        from link_bridge.config import _normalize_omni_repeat_key
+
+        self.cfg.omni_repeat_key = _normalize_omni_repeat_key(key)
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
     def _save_omni_window_geometry(self, geo: str) -> None:
         text = (geo or "").strip()
         if not text or text == (self.cfg.omni_window_geometry or ""):
             return
         self.cfg.omni_window_geometry = text
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _save_omni_window_state(self, state: str) -> None:
+        norm = "zoomed" if str(state or "").strip().lower() == "zoomed" else "normal"
+        if norm == (self.cfg.omni_window_state or "zoomed"):
+            return
+        self.cfg.omni_window_state = norm
+        try:
+            if hasattr(self, "omni_maximized_var"):
+                self.omni_maximized_var.set(norm == "zoomed")
+        except Exception:
+            pass
         try:
             save_config(self.cfg)
         except Exception:
@@ -1429,9 +1525,14 @@ class LinkBridgeApp(tk.Tk):
             changed = True
         norm_state = "zoomed" if state == "zoomed" else "normal"
         self._want_zoomed = norm_state == "zoomed"
-        if norm_state != (self.cfg.window_state or "normal"):
+        if norm_state != (self.cfg.window_state or "zoomed"):
             self.cfg.window_state = norm_state
             changed = True
+            try:
+                if hasattr(self, "main_maximized_var"):
+                    self.main_maximized_var.set(norm_state == "zoomed")
+            except Exception:
+                pass
         if changed:
             save_config(self.cfg)
 
@@ -1663,17 +1764,11 @@ class LinkBridgeApp(tk.Tk):
         if dlg is not None:
             self._ui(dlg.destroy)
         if getattr(sys, "frozen", False):
-            # Give the updater script a moment to attach before we tear down.
+            # The background updater script will swap files and relaunch automatically.
             def _done() -> None:
-                self.status_var.set(f"Installed v{info.version} — start again.")
-                self._append_log(f"Installed v{info.version}; waiting for manual start")
-                messagebox.showinfo(
-                    "Harem Link Bridge",
-                    f"Version {info.version} is ready.\n\n"
-                    "This window will close. Then double-click HaremLinkBridge.exe "
-                    "in the folder that opens (or use your usual shortcut).",
-                )
-                self.after(400, self.quit_app)
+                self.status_var.set(f"Installed v{info.version} — restarting…")
+                self._append_log(f"Installed v{info.version}; auto-restarting")
+                self.after(200, self.quit_app)
 
             self._ui(_done)
         else:

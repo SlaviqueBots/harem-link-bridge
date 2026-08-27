@@ -723,6 +723,22 @@ class TamedPanel(ttk.Frame):
                 continue
         return None
 
+    def _drop_char(self, char_id: int) -> None:
+        """Remove a trashed card from the tamed grid."""
+        cid = int(char_id)
+        before = len(self._items)
+        self._items = [it for it in self._items if int(it.get("id") or 0) != cid]
+        if len(self._items) == before:
+            return
+        self._total = max(0, int(getattr(self, "_total", 0) or 0) - 1)
+        if self._gallery is not None and hasattr(self._gallery, "remove_char"):
+            try:
+                if self._gallery.remove_char(cid):
+                    return
+            except Exception:
+                pass
+        self._render_grid()
+
     def _click_open_image(self, char_id: int, side: str) -> None:
         from link_bridge.open_image import open_full_image
 
@@ -787,6 +803,7 @@ class TamedPanel(ttk.Frame):
             on_remove_from_set=self._remove_from_set,
             can_edit_sets=bool(item.get("mine", True)) and not self._whose,
             can_cycle_name=bool(item.get("can_cycle_name")),
+            is_done=bool(item.get("done")),
         )
 
     def _edit_flavour(self, char_id: int) -> None:
@@ -881,6 +898,10 @@ class TamedPanel(ttk.Frame):
         if action_id == "omni" and self._open_omni_ui is not None:
             self._open_omni_ui(int(char_id))
             return
+        if action_id == "mi_omni":
+            if self._open_omni_ui is not None:
+                self._open_omni_ui(int(char_id))
+            action_id = "mi"
         if self._dm_craft is None:
             if action_id == "omni" and self._open_omni is not None:
                 self._busy = True
@@ -927,6 +948,8 @@ class TamedPanel(ttk.Frame):
                     apply_silent_craft_item(self._item_by_id(char_id), action_id)
                     if str(action_id).startswith("stadd:"):
                         self._note_set_used(str(action_id).split(":", 1)[1])
+                    if action_id in ("tr", "ptr"):
+                        self._drop_char(int(char_id))
                 elif self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram

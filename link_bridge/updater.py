@@ -61,6 +61,7 @@ class UpdateInfo:
     sha256: str = ""
     size: int = 0
     userscript: SidecarFile | None = None
+    url_github: str = ""
 
 
 def parse_version(v: str) -> tuple[int, ...]:
@@ -118,12 +119,14 @@ def _parse_manifest(raw: dict, *, manifest_url: str) -> UpdateInfo | None:
     if not file_url:
         base = manifest_url.rsplit("/", 1)[0]
         file_url = f"{base}/{raw.get('filename') or EXE_NAME}"
+    url_github = str(raw.get("url_github") or "").strip()
     return UpdateInfo(
         version=version,
         url=file_url,
         sha256=str(raw.get("sha256") or "").strip().lower(),
         size=int(raw.get("size") or 0),
         userscript=_parse_userscript(raw, manifest_url=manifest_url),
+        url_github=url_github,
     )
 
 
@@ -214,14 +217,19 @@ def download_update(
     on_progress: Callable[[int, int], None] | None = None,
     on_status: Callable[[str], None] | None = None,
 ) -> Path:
-    """Download the exe beside the running build (Koara host first)."""
+    """Download the exe beside the running build (GitHub CDN first, then Koara server)."""
     urls = ordered_download_urls(info, cfg)
     last_exc: Exception | None = None
     for i, url in enumerate(urls):
         if on_status is not None:
             try:
-                label = "Koara" if i == 0 else url.split("/")[2] if "/" in url else url
-                on_status(f"Connecting to {label}…")
+                if "github.com" in url.lower():
+                    label = "GitHub CDN"
+                elif "108.165.174.158" in url or (cfg.host and cfg.host in url):
+                    label = "Koara Server"
+                else:
+                    label = url.split("/")[2] if "/" in url else url
+                on_status(f"Downloading from {label}…")
             except Exception:
                 pass
         try:
@@ -230,6 +238,7 @@ def download_update(
                 url=url,
                 sha256=info.sha256,
                 size=info.size,
+                url_github=info.url_github,
             )
             return _download_update_once(
                 attempt, dest, timeout=timeout, on_progress=on_progress
@@ -255,7 +264,7 @@ def koara_exe_url(cfg: BridgeConfig | None = None, *, host: str = "", port: int 
 
 
 def ordered_download_urls(info: UpdateInfo, cfg: BridgeConfig) -> list[str]:
-    """Koara first — GitHub release assets are optional and often missing."""
+    """GitHub CDN first for fast download speeds; fallback to Koara server."""
     seen: set[str] = set()
     out: list[str] = []
 
@@ -265,6 +274,20 @@ def ordered_download_urls(info: UpdateInfo, cfg: BridgeConfig) -> list[str]:
             seen.add(u)
             out.append(u)
 
+    # 1. Primary: GitHub URL (if specified in manifest or GitHub mirror)
+    github_url = getattr(info, "url_github", "") or (
+        info.url if "github.com" in (info.url or "").lower() else ""
+    )
+    if not github_url and info.version:
+        github_url = (
+            f"https://github.com/SlaviqueBots/slavique-harem-bot/releases/"
+            f"download/v{info.version}/{EXE_NAME}"
+        )
+
+    if github_url:
+        add(github_url)
+
+    # 2. Fallback: Koara server
     add(koara_exe_url(cfg))
     add(info.url)
     add(_koara_fallback_url(info.url))
@@ -345,7 +368,7 @@ def _download_update_once(
 
 
 def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
-    """PowerShell swap only — never relaunches the app.
+    """PowerShell script that swaps the exe and relaunches the app.
 
     Hard rule: only ``HaremLinkBridge.exe`` (+ ``.new`` / ``.bak``) and helper
     scripts are touched. ``conjure_finder.env``, config JSON, and the userscript
@@ -389,9 +412,9 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "  while ((Get-Date) -lt $deadline) {",
             "    $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue",
             "    if (-not $proc) { break }",
-            "    Start-Sleep -Milliseconds 400",
+            "    Start-Sleep -Milliseconds 300",
             "  }",
-            "  Start-Sleep -Seconds 2",
+            "  Start-Sleep -Milliseconds 600",
             "  if (Test-Path -LiteralPath $bak) {",
             "    Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  }",
@@ -403,7 +426,7 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "      $renamed = $true",
             "      break",
             "    } catch {",
-            "      Start-Sleep -Milliseconds 500",
+            "      Start-Sleep -Milliseconds 300",
             "    }",
             "  }",
             "  if (-not $renamed -and (Test-Path -LiteralPath $target)) {",
@@ -418,7 +441,7 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "      $copied = $true",
             "      break",
             "    } catch {",
-            "      Start-Sleep -Milliseconds 500",
+            "      Start-Sleep -Milliseconds 300",
             "    }",
             "  }",
             "  if (-not $copied -or -not (Test-Path -LiteralPath $target)) {",
@@ -431,8 +454,16 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }",
             f"  # Protected sidecars (never deleted by this script): {protected_list}",
-            "  Set-Content -LiteralPath $note -Value 'Update installed. Double-click HaremLinkBridge.exe to start.' -Encoding UTF8",
-            "  try { Start-Process explorer.exe -ArgumentList ('/select,' + $target) } catch {}",
+            "  $workdir = Split-Path -Parent $target",
+            "  Start-Sleep -Milliseconds 300",
+            "  # Force the new one-file exe to create its own _MEI temp directory.",
+            "  # The helper inherited PyInstaller state from the old process.",
+            "  $env:PYINSTALLER_RESET_ENVIRONMENT = '1'",
+            "  try {",
+            "    Start-Process -FilePath $target -WorkingDirectory $workdir",
+            "  } catch {",
+            "    Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c start \"\" \"' + $target + '\"') -WorkingDirectory $workdir -WindowStyle Hidden",
+            "  }",
             "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
             "  exit 0",
             "} catch {",
@@ -458,7 +489,7 @@ def build_update_bat(*, pid: int, current: Path, new_exe: Path) -> str:
 
 
 def apply_update_and_restart(new_exe: Path) -> None:
-    """Replace the running frozen exe via PowerShell (no relaunch), then exit."""
+    """Replace the running frozen exe via PowerShell and relaunch."""
     current = _exe_path()
     if not getattr(sys, "frozen", False):
         logger.info("dev mode: downloaded update to %s (not applying)", new_exe)
@@ -474,6 +505,14 @@ def apply_update_and_restart(new_exe: Path) -> None:
         build_update_bat(pid=os.getpid(), current=current, new_exe=new_exe),
         encoding="utf-8",
     )
+    # Release singleton mutex before terminating
+    try:
+        from link_bridge.singleton import release_singleton
+
+        release_singleton()
+    except Exception:
+        pass
+
     # ``cmd /c start`` fully detaches the updater from our process tree.
     subprocess.Popen(
         [
