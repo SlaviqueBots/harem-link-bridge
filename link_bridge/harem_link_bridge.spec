@@ -27,6 +27,7 @@ _hidden = [
     "link_bridge.tray",
     "link_bridge.ws_client",
     "link_bridge.updater",
+    "link_bridge.tournament_alarm",
     "link_bridge.autostart",
     "link_bridge.browser_open",
     "link_bridge.session_lock",

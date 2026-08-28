@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         enable_dpi_awareness()
         cfg.check_updates = False
         cfg.start_hidden = False
-        app = LinkBridgeApp(cfg)
+        app = LinkBridgeApp(cfg, dev=True)
         app.title("Harem Link Bridge  DEV  (local source)")
         app.mainloop()
         return 0

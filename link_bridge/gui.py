@@ -65,7 +65,7 @@ class UpdateProgressDialog(tk.Toplevel):
 
 
 class LinkBridgeApp(tk.Tk):
-    def __init__(self, cfg: BridgeConfig | None = None) -> None:
+    def __init__(self, cfg: BridgeConfig | None = None, *, dev: bool = False) -> None:
         from link_bridge.dpi import apply_ui_scale, enable_dpi_awareness
 
         enable_dpi_awareness()
@@ -76,6 +76,12 @@ class LinkBridgeApp(tk.Tk):
 
         self.cfg = cfg or load_config()
         self.cfg.ensure_device_id()
+        self._dev = bool(dev)
+        self._alarm_poll_after: str | None = None
+        self._alarm_ring_after: str | None = None
+        self._alarm_fired_day = ""
+        self._alarm_known_key = ""
+        self._alarm_win: tk.Toplevel | None = None
         saved = (self.cfg.window_geometry or "").strip()
         self.geometry(saved if saved else DEFAULT_GEOMETRY)
 
@@ -371,6 +377,23 @@ class LinkBridgeApp(tk.Tk):
             command=self._on_omni_maximized_toggle,
         ).pack(side=tk.LEFT, padx=(16, 0))
 
+        alarm_row = ttk.Frame(root)
+        alarm_row.pack(fill=tk.X, **pad)
+        self.tournament_alarm_var = tk.BooleanVar(
+            value=bool(getattr(self.cfg, "tournament_alarm", False))
+        )
+        ttk.Checkbutton(
+            alarm_row,
+            text="Tournament alarm (1 min before, looping chime)",
+            variable=self.tournament_alarm_var,
+            command=self._on_tournament_alarm_toggle,
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            alarm_row,
+            text="Test alarm",
+            command=lambda: self._fire_tournament_alarm("dev", preview=True),
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
         theme_row = ttk.Frame(root)
         theme_row.pack(fill=tk.X, **pad)
         ttk.Label(theme_row, text="Appearance").pack(side=tk.LEFT)
@@ -539,6 +562,8 @@ class LinkBridgeApp(tk.Tk):
             self.cfg.omni_window_state = (
                 "zoomed" if bool(self.omni_maximized_var.get()) else "normal"
             )
+        if hasattr(self, "tournament_alarm_var"):
+            self.cfg.tournament_alarm = bool(self.tournament_alarm_var.get())
         from link_bridge.config import _clamp_preview_scale, _clamp_scroll_speed
         from link_bridge.theme import normalize_theme
 
@@ -717,6 +742,166 @@ class LinkBridgeApp(tk.Tk):
         except Exception:
             pass
         self._append_log(f"Bridge window state: {val}")
+
+    def _on_tournament_alarm_toggle(self) -> None:
+        self.cfg.tournament_alarm = bool(self.tournament_alarm_var.get())
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        if self.cfg.tournament_alarm:
+            self._append_log("Tournament alarm: on (1 min before start).")
+            self._kick_tournament_alarm()
+        else:
+            self._append_log("Tournament alarm: off.")
+            self._cancel_tournament_alarm_timers()
+            self._stop_tournament_alarm_ui()
+
+    def _cancel_tournament_alarm_timers(self) -> None:
+        for attr in ("_alarm_poll_after", "_alarm_ring_after"):
+            job = getattr(self, attr, None)
+            if job:
+                try:
+                    self.after_cancel(job)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+
+    def _kick_tournament_alarm(self) -> None:
+        self._cancel_tournament_alarm_timers()
+        if not bool(getattr(self.cfg, "tournament_alarm", False)):
+            return
+        if self._client is None:
+            return
+        self._request_tournament_time()
+
+    def _request_tournament_time(self) -> None:
+        if not bool(getattr(self.cfg, "tournament_alarm", False)):
+            return
+        self._schedule_coro(
+            lambda c: c.request_tournament_time(),
+            self._on_tournament_time_ok,
+            self._on_tournament_time_err,
+        )
+
+    def _on_tournament_time_err(self, exc) -> None:
+        self._alarm_poll_after = self.after(30000, self._request_tournament_time)
+        logger.debug("tournament time poll failed: %s", exc)
+
+    def _on_tournament_time_ok(self, body: dict) -> None:
+        from link_bridge.tournament_alarm import delay_ms_until_ring, parse_ok
+
+        snap = parse_ok(body) if isinstance(body, dict) else None
+        if snap is None:
+            self._alarm_poll_after = self.after(30000, self._request_tournament_time)
+            return
+        now = float(snap["now_ts"] or 0.0)
+        if now <= 0:
+            import time as _time
+
+            now = _time.time()
+        day = str(snap["day"] or "")
+        key = f"{day}:{snap.get('hour')}:{snap.get('finalized')}"
+        if key != self._alarm_known_key:
+            self._alarm_known_key = key
+            if snap.get("finalized") and snap.get("hour") is not None:
+                self._append_log(
+                    f"Tournament today {int(snap['hour'])}:00 MSK — alarm 1 min before."
+                )
+            elif not snap.get("finalized"):
+                self._append_log("Tournament alarm waiting for 17:00 MSK vote result.")
+        if day and day == self._alarm_fired_day:
+            self._alarm_poll_after = self.after(120000, self._request_tournament_time)
+            return
+        delay = delay_ms_until_ring(now, snap.get("start_ts"))
+        if delay == 0:
+            self._fire_tournament_alarm(day)
+            return
+        if delay is not None:
+            self._alarm_ring_after = self.after(
+                delay, lambda d=day: self._fire_tournament_alarm(d)
+            )
+            self._alarm_poll_after = self.after(
+                min(delay + 5000, 180000), self._request_tournament_time
+            )
+            return
+        wait = 20000 if not snap.get("finalized") else 90000
+        self._alarm_poll_after = self.after(wait, self._request_tournament_time)
+
+    def _fire_tournament_alarm(self, day: str, *, preview: bool = False) -> None:
+        from link_bridge.tournament_alarm import start_loop
+
+        if not preview:
+            if not bool(getattr(self.cfg, "tournament_alarm", False)):
+                return
+            if day and day == self._alarm_fired_day:
+                return
+            if day:
+                self._alarm_fired_day = day
+        try:
+            self.deiconify()
+            self.lift()
+        except Exception:
+            pass
+        start_loop()
+        self._show_tournament_alarm_dialog(preview=preview)
+        if preview:
+            self._append_log("Tournament alarm test (DEV).")
+        else:
+            self._append_log("Tournament starts in 1 minute — alarm ringing.")
+            self._alarm_poll_after = self.after(90000, self._request_tournament_time)
+
+    def _show_tournament_alarm_dialog(self, *, preview: bool = False) -> None:
+        win = self._alarm_win
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.lift()
+                    win.attributes("-topmost", True)
+                    return
+            except Exception:
+                self._alarm_win = None
+        win = tk.Toplevel(self)
+        self._alarm_win = win
+        win.title("Tournament alarm")
+        win.resizable(False, False)
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        frame = ttk.Frame(win, padding=16)
+        frame.pack()
+        title = "Tournament starts in 1 minute" + (" (test)" if preview else "")
+        ttk.Label(frame, text=title, font=("", 11, "bold")).pack(anchor=tk.W)
+        ttk.Label(frame, text="Stop the chime when you’re ready.").pack(
+            anchor=tk.W, pady=(6, 10)
+        )
+        ttk.Button(frame, text="Stop alarm", command=self._stop_tournament_alarm_ui).pack(
+            anchor=tk.E
+        )
+        win.protocol("WM_DELETE_WINDOW", self._stop_tournament_alarm_ui)
+        win.update_idletasks()
+        try:
+            px = self.winfo_rootx() + max(0, (self.winfo_width() - win.winfo_width()) // 2)
+            py = self.winfo_rooty() + max(
+                0, (self.winfo_height() - win.winfo_height()) // 2
+            )
+            win.geometry(f"+{px}+{py}")
+        except Exception:
+            pass
+
+    def _stop_tournament_alarm_ui(self) -> None:
+        from link_bridge.tournament_alarm import stop_loop
+
+        stop_loop()
+        win = self._alarm_win
+        self._alarm_win = None
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.destroy()
+            except Exception:
+                pass
 
     def _on_omni_maximized_toggle(self) -> None:
         val = "zoomed" if bool(self.omni_maximized_var.get()) else "normal"
@@ -903,6 +1088,7 @@ class LinkBridgeApp(tk.Tk):
                 if msg.startswith("Connected") and self._roster is not None:
                     self._roster.load_page(0)
                     self._sync_themes_tab()
+                    self._kick_tournament_alarm()
 
             self._ui(_apply)
 
@@ -932,6 +1118,7 @@ class LinkBridgeApp(tk.Tk):
                     self.disconnect_btn.configure(state=tk.DISABLED),
                     self._roster.clear() if self._roster else None,
                     self._hide_themes_tab(),
+                    self._cancel_tournament_alarm_timers(),
                 )
             )
 
@@ -1828,6 +2015,7 @@ class LinkBridgeApp(tk.Tk):
                 pass
             self._browser_hook = None
         self.stop_bridge()
+        self._stop_tournament_alarm_ui()
         if self._tray is not None:
             try:
                 self._tray.stop()

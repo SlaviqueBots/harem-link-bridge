@@ -244,6 +244,8 @@ class BridgeClient:
             "checkres_url_err",
             "conjure_result_dm_ok",
             "conjure_result_dm_err",
+            "tournament_time_ok",
+            "tournament_time_err",
         ):
             if op.startswith("roster_page"):
                 key = "roster_page"
@@ -273,6 +275,8 @@ class BridgeClient:
                 key = "checkres_url"
             elif op.startswith("conjure_result_dm"):
                 key = "conjure_result_dm"
+            elif op.startswith("tournament_time"):
+                key = "tournament_time"
             elif op.startswith("browse_users"):
                 kind = str(body.get("kind") or "roster").strip().lower() or "roster"
                 key = f"browse_users:{kind}"
@@ -393,6 +397,13 @@ class BridgeClient:
                 "set_name": (name or "").strip(),
                 "target": dest,
             },
+            timeout=timeout,
+        )
+
+    async def request_tournament_time(self, *, timeout: float = 15.0) -> dict[str, Any]:
+        return await self._request(
+            "tournament_time",
+            {"op": "tournament_time"},
             timeout=timeout,
         )
 

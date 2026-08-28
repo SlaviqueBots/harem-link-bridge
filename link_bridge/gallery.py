@@ -254,7 +254,7 @@ class JustifiedGallery:
         gen_fn: Callable[[], int],
         preview_scale: float = 1.0,
         scroll_speed: float = 3.0,
-        show_scrollbar: bool = True,
+        show_scrollbar: bool = False,
     ) -> None:
         self._parent = parent
         self._photos = photos
@@ -412,6 +412,7 @@ class JustifiedGallery:
         self._canvas = tk.Canvas(parent, highlightthickness=0, bd=0)
         self._canvas.configure(yscrollincrement=1)
         self._apply_surface()
+        # Wheel-only: ttk.Scrollbar on Windows draws the classic light trough.
         if self._show_scrollbar:
             self._sb = ttk.Scrollbar(parent, orient=tk.VERTICAL)
             self._sb.configure(command=self._on_scrollbar)
@@ -1006,14 +1007,11 @@ class PairGallery:
         parent = self._parent
         for child in list(parent.winfo_children()):
             child.destroy()
-        self._sb = ttk.Scrollbar(parent, orient=tk.VERTICAL)
+        self._sb = None
         self._canvas = tk.Canvas(parent, highlightthickness=0, bd=0)
         self._canvas.configure(yscrollincrement=1)
         self._apply_surface()
-        self._sb.configure(command=self._on_scrollbar)
-        self._canvas.configure(yscrollcommand=self._sb.set)
-        self._sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._canvas.pack(fill=tk.BOTH, expand=True)
         self._inner = tk.Frame(self._canvas, bd=0, highlightthickness=0)
         self._apply_surface()
         self._win = self._canvas.create_window((0, 0), window=self._inner, anchor=tk.NW)

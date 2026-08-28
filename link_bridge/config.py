@@ -94,6 +94,8 @@ class BridgeConfig:
     # Local HTTP hook for browser userscript (127.0.0.1 only).
     browser_hook_enabled: bool = True
     browser_hook_port: int = 8767
+    # Soft looping chime 1 minute before today's voted tournament (off by default).
+    tournament_alarm: bool = False
 
     def ws_url(self) -> str:
         host = (self.host or "").strip() or "127.0.0.1"
@@ -169,6 +171,7 @@ def load_config() -> BridgeConfig:
         scroll_speed=_clamp_scroll_speed(raw.get("scroll_speed", 3.0)),
         browser_hook_enabled=bool(raw.get("browser_hook_enabled", True)),
         browser_hook_port=int(raw.get("browser_hook_port") or 8767),
+        tournament_alarm=bool(raw.get("tournament_alarm", False)),
     )
     cfg.ensure_device_id()
     return cfg

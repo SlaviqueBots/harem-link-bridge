@@ -147,14 +147,11 @@ class NumberedPairBoard:
         bg = c.get("bg", surf)
         for child in list(self._parent.winfo_children()):
             child.destroy()
-        self._sb = ttk.Scrollbar(self._parent, orient=tk.VERTICAL)
+        self._sb = None
         self._canvas = tk.Canvas(
             self._parent, highlightthickness=0, bd=0, bg=surf, highlightbackground=surf
         )
-        self._sb.configure(command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=self._sb.set)
-        self._sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._canvas.pack(fill=tk.BOTH, expand=True)
         self._inner = tk.Frame(self._canvas, bg=bg, bd=0, highlightthickness=0)
         self._win = self._canvas.create_window((0, 0), window=self._inner, anchor=tk.NW)
 
