@@ -1313,6 +1313,11 @@ class RosterPanel(ttk.Frame):
             lambda e, x=char_id, u=post_url: self._thumb_context_menu(e, x, u),
         )
 
+    def apply_silent_craft(self, char_id: int, craft: str) -> None:
+        from link_bridge.thumb_menu import apply_silent_craft_item
+
+        apply_silent_craft_item(self._item_by_id(int(char_id)), str(craft or ""))
+
     def _item_by_id(self, char_id: int) -> dict[str, Any] | None:
         for it in self._items:
             try:
@@ -1460,9 +1465,10 @@ class RosterPanel(ttk.Frame):
             # Telegram DM omnicraft (legacy), not the in-client panel.
             action_id = "omni"
         if action_id == "mi_omni":
-            if self._open_omni_ui is not None:
-                self._open_omni_ui(int(char_id))
+            open_omni_after_mirror = True
             action_id = "mi"
+        else:
+            open_omni_after_mirror = False
         # Prefer dedicated dm_craft; fall back to open_omni for plain omni.
         if self._dm_craft is None:
             if action_id == "omni":
@@ -1482,6 +1488,12 @@ class RosterPanel(ttk.Frame):
                 notice = detail if detail and detail != "ok" else f"{label} ✓"
                 self.meta_var.set(f"#{char_id}: {notice}")
                 self._on_log(f"Craft {action_id} char {char_id}: {notice}")
+                if open_omni_after_mirror and self._open_omni_ui is not None:
+                    from link_bridge.thumb_menu import mirror_char_id_from_craft
+
+                    mirror_id = mirror_char_id_from_craft(body)
+                    if mirror_id > 0:
+                        self._open_omni_ui(mirror_id)
                 if silent:
                     from link_bridge.thumb_menu import apply_silent_craft_item
 

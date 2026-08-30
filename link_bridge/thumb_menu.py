@@ -12,6 +12,23 @@ from collections.abc import Callable
 from typing import Any
 
 
+def mirror_char_id_from_craft(body: dict) -> int:
+    """New roster row after a successful Bridge mirror craft."""
+    try:
+        mid = int(body.get("mirror_char_id") or 0)
+        if mid > 0:
+            return mid
+    except (TypeError, ValueError):
+        pass
+    detail = str(body.get("detail") or "")
+    if detail.startswith("mirror:"):
+        try:
+            return int(detail.split(":", 1)[1])
+        except (IndexError, ValueError):
+            return 0
+    return 0
+
+
 def apply_silent_craft_item(item: dict[str, Any] | None, action_id: str) -> None:
     """Update a cached roster item after a quiet craft (no Telegram post)."""
     if not item:
@@ -189,7 +206,11 @@ def popup_thumb_menu(
             label="Cycle character name…",
             command=lambda: craft("cr"),
         )
-    extra.add_command(label="Open Variant…", command=lambda: craft("vr"))
+    extra.add_command(
+        label="Cycle next variant",
+        command=lambda: craft("vr_cycle"),
+    )
+    extra.add_command(label="Open Variant in Telegram DM…", command=lambda: craft("vr"))
     extra.add_command(label="Title swap…", command=lambda: craft("tswap"))
     extra.add_command(label="Open omni in bot DMs", command=lambda: craft("omni_dm"))
     menu.add_cascade(label="Extra crafts", menu=extra)

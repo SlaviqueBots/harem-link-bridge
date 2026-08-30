@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "cards": {
+    "8066": {
+      "sections": [
+        {
+          "id": "author",
+          "title": "Author",
+          "preset": true,
+          "urls": [
+            "https://danbooru.donmai.us/posts/11924681"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -564,6 +564,13 @@ class JustifiedGallery:
         """Swap one tile's preview URL and refetch (no reorder)."""
         cid = int(char_id)
         url = (preview_url or "").strip()
+        if not url and item is not None:
+            url = str(
+                item.get("preview_url")
+                or item.get("image_url")
+                or item.get("file_url")
+                or ""
+            ).strip()
         if not url:
             return False
         hit = None

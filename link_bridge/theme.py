@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
+from typing import Any
 
 # Discord/Cursor-adjacent dark surface.
 DARK: dict[str, str] = {
@@ -460,8 +461,67 @@ def schedule_theme_refresh(root: tk.Misc, mode: str, *, delay_ms: int = 80) -> N
         pass
 
 
+# Windows virtual-key codes for physical A/C/V/X (layout-independent).
+_CLIP_VK = {0x41: "a", 0x43: "c", 0x56: "v", 0x58: "x"}
+_CLIP_KEYSYMS = {
+    "c": "c",
+    "v": "v",
+    "x": "x",
+    "a": "a",
+    "cyrillic_es": "c",
+    "cyrillic_em": "v",
+    "cyrillic_che": "x",
+    "cyrillic_ef": "a",
+}
+
+
+def clipboard_control_letter(event: Any) -> str | None:
+    """Map Ctrl+letter using keysym or physical Windows keycode (any keyboard language)."""
+    keysym = str(getattr(event, "keysym", "") or "").lower()
+    letter = _CLIP_KEYSYMS.get(keysym)
+    if letter:
+        return letter
+    try:
+        code = int(getattr(event, "keycode", 0) or 0)
+    except (TypeError, ValueError):
+        code = 0
+    return _CLIP_VK.get(code)
+
+
+def _bind_clipboard_sequences(widget: tk.Misc, handlers: dict[str, Any]) -> None:
+    for seq, letter in (
+        ("<Control-x>", "x"),
+        ("<Control-X>", "x"),
+        ("<Control-c>", "c"),
+        ("<Control-C>", "c"),
+        ("<Control-v>", "v"),
+        ("<Control-V>", "v"),
+        ("<Control-a>", "a"),
+        ("<Control-A>", "a"),
+        ("<Control-Key-x>", "x"),
+        ("<Control-Key-c>", "c"),
+        ("<Control-Key-v>", "v"),
+        ("<Control-Key-a>", "a"),
+    ):
+        widget.bind(seq, handlers[letter])
+
+    def _on_ctrl_key(event=None):
+        keysym = str(getattr(event, "keysym", "") or "").lower()
+        if keysym in ("c", "v", "x", "a"):
+            return None
+        letter = clipboard_control_letter(event)
+        if not letter:
+            return None
+        fn = handlers.get(letter)
+        if fn is None:
+            return None
+        return fn(event)
+
+    widget.bind("<Control-KeyPress>", _on_ctrl_key, add="+")
+
+
 def bind_entry_clipboard(entry: ttk.Entry | tk.Entry) -> None:
-    """Ensure Ctrl+X/C/V/A work on Windows ttk.Entry."""
+    """Ensure Ctrl+X/C/V/A work on Windows ttk.Entry for any active keyboard language."""
 
     def _cut(_event=None):
         try:
@@ -492,21 +552,13 @@ def bind_entry_clipboard(entry: ttk.Entry | tk.Entry) -> None:
             pass
         return "break"
 
-    for seq, handler in (
-        ("<Control-x>", _cut),
-        ("<Control-X>", _cut),
-        ("<Control-c>", _copy),
-        ("<Control-C>", _copy),
-        ("<Control-v>", _paste),
-        ("<Control-V>", _paste),
-        ("<Control-a>", _select_all),
-        ("<Control-A>", _select_all),
-    ):
-        entry.bind(seq, handler)
+    _bind_clipboard_sequences(
+        entry, {"x": _cut, "c": _copy, "v": _paste, "a": _select_all}
+    )
 
 
 def bind_text_clipboard(text: tk.Text) -> None:
-    """Ensure Ctrl+X/C/V/A and text selection work in multiline editors."""
+    """Ensure Ctrl+X/C/V/A work in multiline editors for any active keyboard language."""
 
     def _cut(_event=None):
         try:
@@ -545,14 +597,6 @@ def bind_text_clipboard(text: tk.Text) -> None:
             pass
         return "break"
 
-    for seq, handler in (
-        ("<Control-x>", _cut),
-        ("<Control-X>", _cut),
-        ("<Control-c>", _copy),
-        ("<Control-C>", _copy),
-        ("<Control-v>", _paste),
-        ("<Control-V>", _paste),
-        ("<Control-a>", _select_all),
-        ("<Control-A>", _select_all),
-    ):
-        text.bind(seq, handler)
+    _bind_clipboard_sequences(
+        text, {"x": _cut, "c": _copy, "v": _paste, "a": _select_all}
+    )

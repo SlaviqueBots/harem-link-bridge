@@ -6,12 +6,13 @@ import json
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
 
-UrlHandler = Callable[[str, dict[str, Any]], None]
+UrlHandler = Callable[[str, dict[str, Any]], dict[str, Any] | None]
 
 
 class _HookHandler(BaseHTTPRequestHandler):
@@ -57,6 +58,9 @@ class _HookHandler(BaseHTTPRequestHandler):
             meta["source"] = str(body.get("source") or "").strip()
         if body.get("action"):
             meta["action"] = str(body.get("action") or "").strip().lower()
+        tags = body.get("tags")
+        if isinstance(tags, dict):
+            meta["tags"] = tags
         return str(body.get("url") or "").strip(), meta
 
     def _reply(self, code: int, payload: dict) -> None:
@@ -78,10 +82,16 @@ class _HookHandler(BaseHTTPRequestHandler):
             self._reply(503, {"ok": False, "error": "bridge not ready"})
             return
         try:
-            handler(url, meta)
+            extra = handler(url, meta)
         except Exception as exc:
             logger.debug("browser_hook handler failed", exc_info=True)
             self._reply(500, {"ok": False, "error": str(exc)})
+            return
+        if isinstance(extra, dict):
+            ok = bool(extra.get("ok", True))
+            payload = dict(extra)
+            payload.setdefault("ok", ok)
+            self._reply(200 if ok else 400, payload)
             return
         self._reply(200, {"ok": True})
 

@@ -43,6 +43,7 @@ PROTECTED_SIDECARS: tuple[str, ...] = (
     "harem_link_bridge.json",
     USERSCRIPT_NAME,
     "conjure_finder_findings.json",
+    "crafting_plans.json",
 )
 
 

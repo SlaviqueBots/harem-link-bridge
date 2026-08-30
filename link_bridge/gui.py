@@ -1330,6 +1330,9 @@ class LinkBridgeApp(tk.Tk):
                 on_media_changed=self._on_omni_media_changed,
                 repeat_key_get=lambda: str(self.cfg.omni_repeat_key or "space"),
                 repeat_key_set=self._set_omni_repeat_key,
+                dm_craft=self._roster_dm_craft,
+                get_flavour=self._omni_flavour_for,
+                on_silent_craft=self._on_omni_silent_craft,
             )
             self._omni_host = host
 
@@ -1391,6 +1394,20 @@ class LinkBridgeApp(tk.Tk):
             self._roster.note_char_media(int(char_id), dict(media or {}))
         except Exception:
             logger.debug("omni media note failed", exc_info=True)
+
+    def _omni_flavour_for(self, char_id: int) -> str:
+        if self._roster is None:
+            return ""
+        item = self._roster._item_by_id(int(char_id)) or {}
+        return str(item.get("flavour") or "")
+
+    def _on_omni_silent_craft(self, char_id: int, craft: str) -> None:
+        if self._roster is None:
+            return
+        try:
+            self._roster.apply_silent_craft(int(char_id), str(craft or ""))
+        except Exception:
+            logger.debug("omni silent craft sync failed", exc_info=True)
 
     def _set_omni_beep(self, flag: bool) -> None:
         self.cfg.omni_beep = bool(flag)
@@ -1600,13 +1617,41 @@ class LinkBridgeApp(tk.Tk):
         except OSError as exc:
             self._append_log(f"Browser hook failed on port {port}: {exc}")
 
-    def _on_browser_post_url(self, url: str, meta: dict | None = None) -> None:
+    def _on_browser_post_url(self, url: str, meta: dict | None = None) -> dict | None:
         text = (url or "").strip()
         if not text:
-            return
+            return {"ok": False, "error": "missing url"}
         meta = meta or {}
         from_browser = str(meta.get("source") or "").strip().lower() == "browser"
         action = str(meta.get("action") or "both").strip().lower()
+        if action == "craft":
+            import threading
+
+            box: dict = {}
+            done = threading.Event()
+
+            def _craft() -> None:
+                try:
+                    host = getattr(self, "_omni_host", None)
+                    if host is None or not host.winfo_exists():
+                        box.update({"ok": False, "error": "Open OmniCraft first"})
+                    else:
+                        box.update(
+                            host.ingest_browser_craft(text, meta.get("tags") or {})
+                        )
+                    detail = box.get("detail") or box.get("error") or ""
+                    if detail:
+                        self._append_log(f"Browser [craft] → {detail}")
+                except Exception as exc:
+                    box.update({"ok": False, "error": str(exc)})
+                    self._append_log(f"Browser [craft] failed: {exc}")
+                finally:
+                    done.set()
+
+            self._ui(_craft)
+            if not done.wait(8.0):
+                return {"ok": False, "error": "Bridge UI timed out"}
+            return box or {"ok": False, "error": "craft failed"}
         if action not in ("checkres", "conjure", "both"):
             action = "both"
         do_checkres = action in ("checkres", "both")
@@ -1649,6 +1694,7 @@ class LinkBridgeApp(tk.Tk):
                 )
 
         self._ui(_go)
+        return None
 
     def _send_conjure_result_dm(self, url: str, text: str, command: str = "") -> None:
         body = (text or "").strip()
