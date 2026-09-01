@@ -218,10 +218,6 @@ class BridgeClient:
             "sets_rename_err",
             "sets_delete_ok",
             "sets_delete_err",
-            "sets_present_ok",
-            "sets_present_err",
-            "sets_avoid_ok",
-            "sets_avoid_err",
             "register_cup_ok",
             "register_cup_err",
             "dm_craft_ok",
@@ -244,8 +240,6 @@ class BridgeClient:
             "checkres_url_err",
             "conjure_result_dm_ok",
             "conjure_result_dm_err",
-            "tournament_time_ok",
-            "tournament_time_err",
         ):
             if op.startswith("roster_page"):
                 key = "roster_page"
@@ -275,8 +269,6 @@ class BridgeClient:
                 key = "checkres_url"
             elif op.startswith("conjure_result_dm"):
                 key = "conjure_result_dm"
-            elif op.startswith("tournament_time"):
-                key = "tournament_time"
             elif op.startswith("browse_users"):
                 kind = str(body.get("kind") or "roster").strip().lower() or "roster"
                 key = f"browse_users:{kind}"
@@ -292,10 +284,6 @@ class BridgeClient:
                 key = "sets_rename"
             elif op.startswith("sets_delete"):
                 key = "sets_delete"
-            elif op.startswith("sets_present"):
-                key = "sets_present"
-            elif op.startswith("sets_avoid"):
-                key = "sets_avoid"
             else:
                 key = "sets_list"
             fut = self._pending.pop(key, None)
@@ -369,19 +357,6 @@ class BridgeClient:
             timeout=timeout,
         )
 
-    async def request_sets_avoid(
-        self, name: str, avoided: bool, *, timeout: float = 20.0
-    ) -> dict[str, Any]:
-        return await self._request(
-            "sets_avoid",
-            {
-                "op": "sets_avoid",
-                "name": (name or "").strip(),
-                "avoided": bool(avoided),
-            },
-            timeout=timeout,
-        )
-
     async def request_sets_present(
         self,
         name: str,
@@ -397,20 +372,6 @@ class BridgeClient:
                 "set_name": (name or "").strip(),
                 "target": dest,
             },
-            timeout=timeout,
-        )
-
-    async def request_tournament_time(self, *, timeout: float = 15.0) -> dict[str, Any]:
-        return await self._request(
-            "tournament_time",
-            {"op": "tournament_time"},
-            timeout=timeout,
-        )
-
-    async def request_balance(self, *, timeout: float = 15.0) -> dict[str, Any]:
-        return await self._request(
-            "balance",
-            {"op": "balance"},
             timeout=timeout,
         )
 
@@ -514,7 +475,6 @@ class BridgeClient:
         k = (kind or "roster").strip().lower()
         allowed = {
             "tamed",
-            "primed",
             "sets",
             "roster",
             "roster_done",

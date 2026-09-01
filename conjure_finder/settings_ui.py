@@ -131,6 +131,9 @@ class SettingsDialog(tk.Toplevel):
         ttk.Button(btns, text="Save", command=self._save).pack(side=tk.RIGHT, padx=(0, 8))
 
         self.bind("<Escape>", lambda _e: self.destroy())
+        from link_bridge.window_keys import bind_q_close
+
+        bind_q_close(self)
         self.after(50, self._center)
 
     def _center(self) -> None:

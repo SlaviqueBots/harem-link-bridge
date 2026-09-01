@@ -1,4 +1,4 @@
-"""Colored pig-head glyph for money UI (Tk greys Unicode 🐷)."""
+"""Colored pig-head glyph for money UI (Tk greys Unicode ????)."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _EYE = (60, 35, 50, 255)
 
 def pig_char() -> str:
     """Fallback text when a PhotoImage cannot be built."""
-    return "🐷"
+    return "????"
 
 
 def pig_photo(master: tk.Misc, *, size: int = 18) -> Any:

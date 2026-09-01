@@ -59,7 +59,7 @@ class BridgeConfig:
     focus_telegram: bool = True
     # True = tight justified gallery (default). False = square crop grid.
     natural_thumbs: bool = True
-    # Gallery row height multiplier (0.5–2.0). 1.5 ≈ older larger look on big screens.
+    # Gallery row height multiplier (0.5???2.0). 1.5 ??? older larger look on big screens.
     preview_scale: float = 1.5
     # Middle-click post destination: "group" (main harem) or "dm".
     middle_click_target: str = "group"
@@ -90,7 +90,7 @@ class BridgeConfig:
     omni_window_state: str = "zoomed"
     # App chrome: "dark" (default) or "light" (classic bright look).
     ui_theme: str = "dark"
-    # Extra UI scale on top of Windows DPI (0.90–1.50). 1.0 = follow display DPI.
+    # Extra UI scale on top of Windows DPI (0.90???1.50). 1.0 = follow display DPI.
     ui_scale: float = 1.0
     # Left-click opens in-client Omnicraft instead of the image viewer.
     left_click_omni: bool = False
@@ -98,7 +98,7 @@ class BridgeConfig:
     left_click_flavour: bool = True
     # Roster: hide cards that already belong to any set.
     hide_in_any_set: bool = False
-    # Mouse-wheel scroll strength (0.25–6.0). Default 3.0 with smooth easing.
+    # Mouse-wheel scroll strength (0.25???6.0). Default 3.0 with smooth easing.
     scroll_speed: float = 3.0
     # Local HTTP hook for browser userscript (127.0.0.1 only).
     browser_hook_enabled: bool = True

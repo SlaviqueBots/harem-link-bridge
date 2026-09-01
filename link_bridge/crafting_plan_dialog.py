@@ -187,7 +187,7 @@ def edit_crafting_plan(
             win,
             title="New section",
             initial="",
-            prompt="Name this list (e.g. extra G, outfit, …)",
+            prompt="Name this list (e.g. extra G, outfit, ???)",
             max_chars=48,
         )
         if not name:

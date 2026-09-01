@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import logging
 import threading
@@ -12,7 +11,6 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 COLS = 6
@@ -27,11 +25,8 @@ USER_AGENT = "HaremLinkBridge/1.3 (+roster preview)"
 
 # Bound memory + download concurrency so long sessions keep showing previews.
 _MAX_CACHE_ENTRIES = 800  # ≥ two roster pages + sets headroom
-_MAX_CACHE_BYTES = 256 * 1024 * 1024  # 256 MiB RAM
+_MAX_CACHE_BYTES = 256 * 1024 * 1024  # 256 MiB
 _FETCH_WORKERS = 16
-_DISK_MAX_BYTES = 512 * 1024 * 1024  # 512 MiB on disk across restarts
-_disk_dir: Path | None = None
-_disk_puts = 0
 
 logger = logging.getLogger(__name__)
 
@@ -57,114 +52,16 @@ def compute_thumb(width: int, height: int, *, cols: int = COLS, rows: int = ROWS
     return max(MIN_THUMB, min(tw, th))
 
 
-def set_disk_cache_dir(path: Path | None) -> None:
-    """Persist preview bytes beside the config so tab switches stay snappy."""
-    global _disk_dir
-    if path is None:
-        _disk_dir = None
-        return
-    folder = Path(path)
-    folder.mkdir(parents=True, exist_ok=True)
-    _disk_dir = folder
-
-
-def enable_default_disk_cache() -> None:
-    from link_bridge.config import app_dir
-
-    set_disk_cache_dir(app_dir() / "thumb_cache")
-
-
-def _disk_key(url: str) -> str:
-    return hashlib.sha256((url or "").encode("utf-8", errors="replace")).hexdigest()[:40]
-
-
-def _disk_get(url: str) -> bytes | None:
-    folder = _disk_dir
-    if folder is None:
-        return None
-    path = folder / f"{_disk_key(url)}.img"
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    if not data:
-        return None
-    try:
-        path.touch(exist_ok=True)
-    except OSError:
-        pass
-    return data
-
-
-def _disk_put(url: str, data: bytes) -> None:
-    folder = _disk_dir
-    if folder is None or not data:
-        return
-    path = folder / f"{_disk_key(url)}.img"
-    try:
-        path.write_bytes(data)
-    except OSError:
-        return
-    global _disk_puts
-    _disk_puts += 1
-    if _disk_puts % 25 == 0:
-        _disk_prune()
-
-
-def _disk_prune() -> None:
-    folder = _disk_dir
-    if folder is None:
-        return
-    try:
-        files = [p for p in folder.glob("*.img") if p.is_file()]
-    except OSError:
-        return
-    total = 0
-    stamped: list[tuple[float, int, Path]] = []
-    for path in files:
-        try:
-            st = path.stat()
-        except OSError:
-            continue
-        total += int(st.st_size)
-        stamped.append((float(st.st_mtime), int(st.st_size), path))
-    if total <= _DISK_MAX_BYTES:
-        return
-    stamped.sort()  # oldest first
-    for _mtime, size, path in stamped:
-        if total <= _DISK_MAX_BYTES:
-            break
-        try:
-            path.unlink()
-            total -= size
-        except OSError:
-            pass
-
-
-def _ram_get(url: str) -> bytes | None:
+def cache_get(url: str) -> bytes | None:
     key = (url or "").strip()
     if not key:
         return None
     with _cache_lock:
         data = _byte_cache.get(key)
-        if data is not None:
-            _byte_cache.move_to_end(key)
-            return data
-    return None
-
-
-def cache_get(url: str) -> bytes | None:
-    key = (url or "").strip()
-    if not key:
-        return None
-    ram = _ram_get(key)
-    if ram is not None:
-        return ram
-    disk = _disk_get(key)
-    if disk is not None:
-        cache_put(key, disk)
-        return disk
-    return None
+        if data is None:
+            return None
+        _byte_cache.move_to_end(key)
+        return data
 
 
 def cache_put(url: str, data: bytes) -> None:
@@ -183,7 +80,6 @@ def cache_put(url: str, data: bytes) -> None:
         ):
             _, evicted = _byte_cache.popitem(last=False)
             _cache_bytes -= len(evicted)
-    _disk_put(key, data)
 
 
 def cache_clear() -> None:
@@ -223,10 +119,6 @@ def open_rgb(data: bytes):
     from PIL import Image, ImageOps
 
     im = Image.open(io.BytesIO(data))
-    try:
-        im.seek(0)
-    except Exception:
-        pass
     try:
         im = ImageOps.exif_transpose(im)
     except Exception:
@@ -286,15 +178,24 @@ def image_aspect(data: bytes, *, cache_key: str = "") -> float:
 
 
 def decode_thumb_sized(data: bytes, width: int, height: int) -> Any:
-    """Resize into an exact pixel box with Telegram-style center crop (no squash)."""
-    from PIL import Image, ImageOps, ImageTk
+    """Resize to an exact pixel box (aspect already chosen by the layout)."""
+    from PIL import Image, ImageTk
 
     w = max(1, int(width))
     h = max(1, int(height))
     im = open_rgb(data)
-    # Cover-crop: scale so the box is filled, then trim equal sides / top-bottom.
-    # Never stretch. Full bytes stay in the thumb cache for other sizes.
-    im = ImageOps.fit(im, (w, h), method=Image.Resampling.BILINEAR)
+    # BILINEAR is much cheaper than LANCZOS for hundreds of gallery tiles.
+    resample = Image.Resampling.BILINEAR
+    # Never distort: fit inside the box (letterbox if drift left a 1px mismatch).
+    src_a = im.size[0] / max(1, im.size[1])
+    box_a = w / h
+    if abs(src_a - box_a) > 0.02:
+        # Prefer contain into the assigned box rather than stretch.
+        from PIL import ImageOps
+
+        im = ImageOps.contain(im, (w, h), method=resample)
+        return ImageTk.PhotoImage(im)
+    im = im.resize((w, h), resample)
     return ImageTk.PhotoImage(im)
 
 
@@ -342,14 +243,9 @@ def schedule_thumb_fetch(
             on_err(ValueError("empty url"))
         return
 
-    # RAM hits must not sit behind in-flight downloads — returning to a
-    # cached page should paint immediately on the UI thread.
-    ram = _ram_get(key)
-    if ram is not None:
-        try:
-            on_data(ram)
-        except Exception:
-            logger.debug("thumb ram-hit callback failed", exc_info=True)
+    cached = cache_get(key)
+    if cached is not None:
+        _fetch_pool.submit(on_data, cached)
         return
 
     with _cache_lock:

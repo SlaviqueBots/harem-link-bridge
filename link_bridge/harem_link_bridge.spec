@@ -17,7 +17,7 @@ repo_root = os.path.dirname(spec_dir)
 
 # Bundled ffmpeg binary (imageio-ffmpeg) — no system install for adopters.
 _ffmpeg_datas = collect_data_files("imageio_ffmpeg")
-# CA roots for httpsx / Danbooru / Rule34 (avoids bare [Errno 2] on HTTPS).
+# CA roots for https / Danbooru / Rule34 (avoids bare [Errno 2] on HTTPS).
 _certifi_datas = collect_data_files("certifi")
 
 _hidden = [
@@ -52,6 +52,10 @@ _hidden = [
     "link_bridge.help_dialog",
     "link_bridge.omni",
     "link_bridge.pig_snout",
+    "link_bridge.dpi",
+    "link_bridge.browser_hook",
+    "link_bridge.crafting_plans",
+    "link_bridge.crafting_plan_dialog",
     "link_bridge.video_still",
     "imageio_ffmpeg",
     "websockets",

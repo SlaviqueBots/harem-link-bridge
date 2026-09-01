@@ -676,6 +676,9 @@ class ConjureFinderApp(ttk.Frame):
                 text="Open post",
                 command=lambda u=entry.page_url: webbrowser.open(u),
             ).pack(side=tk.RIGHT, padx=(0, 8))
+        from link_bridge.window_keys import bind_q_close
+
+        bind_q_close(win)
 
     def process_incoming_url(self, url: str, *, from_browser: bool = False) -> None:
         """Queue a single-post search (browser hook / Bridge)."""
@@ -875,6 +878,9 @@ class ConjureFinderApp(ttk.Frame):
         btn_row.pack(fill=tk.X, padx=10, pady=(0, 10))
         ttk.Button(btn_row, text="Load", command=_do_load).pack(side=tk.RIGHT)
         ttk.Button(btn_row, text="Cancel", command=picker.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        from link_bridge.window_keys import bind_q_close
+
+        bind_q_close(picker)
 
     def _run_bulk_worker(
         self, urls: list[str], own_author: bool, own_character: bool

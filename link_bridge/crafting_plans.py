@@ -67,7 +67,7 @@ def plans_path() -> Path:
 
 
 def canonical_post_url(raw: str) -> str:
-    """Stable identity for a booru post URL (Danbooru ≠ Rule34)."""
+    """Stable identity for a booru post URL (Danbooru ??? Rule34)."""
     text = (raw or "").strip()
     if not text:
         return ""
@@ -101,7 +101,7 @@ def preview_label(url: str) -> str:
         return "#" + key.rsplit("id=", 1)[-1]
     text = (url or "").strip()
     if len(text) > 28:
-        return text[:12] + "…" + text[-12:]
+        return text[:12] + "???" + text[-12:]
     return text
 
 

@@ -39,17 +39,6 @@ UPDATE_BAT = "_update_conjure_finder.bat"
 UPDATE_PS1 = "_update_conjure_finder.ps1"
 CREATE_NO_WINDOW = 0x08000000
 
-# Sidecar files / tools that MUST survive an auto-update. The PowerShell swap
-# only touches Conjure Finder.exe (+ .new / .bak) and its own helper scripts.
-PROTECTED_SIDECARS: tuple[str, ...] = (
-    "conjure_finder.env",
-    "Sparse Tag Browser.exe",
-    "SparseTagBrowser.exe",
-    "sparse_tags_favourites.json",
-    "sparse_tags_prefs.json",
-    "sparse_tags_keys_path.txt",
-)
-
 
 @dataclass
 class UpdateConfig:
@@ -185,23 +174,15 @@ def download_update(info: UpdateInfo, dest: Path, *, timeout: float = 120.0) -> 
 
 
 def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
-    """PowerShell swap only — never relaunches the app.
-
-    Hard rule: only ``Conjure Finder.exe`` (+ ``.new`` / ``.bak``) and this
-    script's own helper files are touched. Co-located Sparse Tag Browser,
-    ``conjure_finder.env``, and ``sparse_tags_*.json`` are never deleted.
-    """
+    """PowerShell swap only — never relaunches the app."""
     target = str(current)
     new_path = str(new_exe)
     bak = str(current) + ".bak"
     log_path = str(current.parent / "_update_fail.txt")
     note_path = str(current.parent / "_UPDATE_START_HERE.txt")
-    expected_leaf = EXE_NAME
 
     def q(p: str) -> str:
         return "'" + p.replace("'", "''") + "'"
-
-    protected_list = ", ".join(PROTECTED_SIDECARS)
 
     return "\r\n".join(
         [
@@ -212,20 +193,10 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             f"$bak = {q(bak)}",
             f"$log = {q(log_path)}",
             f"$note = {q(note_path)}",
-            f"$expectedLeaf = {q(expected_leaf)}",
             "function Write-Fail([string]$msg) {",
             "  Set-Content -LiteralPath $log -Value $msg -Encoding UTF8",
             "}",
             "try {",
-            "  # Refuse to run if someone pointed the updater at the wrong file.",
-            "  if ([IO.Path]::GetFileName($target) -ne $expectedLeaf) {",
-            "    Write-Fail ('refusing_update_wrong_target:' + $target)",
-            "    exit 1",
-            "  }",
-            "  if (-not $new.EndsWith(($expectedLeaf + '.new'))) {",
-            "    Write-Fail ('refusing_update_wrong_new:' + $new)",
-            "    exit 1",
-            "  }",
             "  $deadline = (Get-Date).AddSeconds(120)",
             "  while ((Get-Date) -lt $deadline) {",
             "    $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue",
@@ -271,7 +242,6 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "  }",
             "  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }",
-            f"  # Protected sidecars (never deleted by this script): {protected_list}",
             "  Set-Content -LiteralPath $note -Value 'Update installed. Double-click Conjure Finder.exe to start.' -Encoding UTF8",
             "  try { Start-Process explorer.exe -ArgumentList ('/select,' + $target) } catch {}",
             "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
@@ -339,11 +309,7 @@ def apply_update_and_restart(new_exe: Path) -> None:
 
 
 def run_update(cfg: UpdateConfig | None, info: UpdateInfo) -> Path:
-    # Always download beside the running exe under a fixed name — never overwrite
-    # Sparse Tag Browser.exe or user JSON / env files.
     dest = ROOT / f"{EXE_NAME}.new"
-    if dest.name != f"{EXE_NAME}.new":
-        raise RuntimeError(f"refusing update dest {dest!s}")
     path = download_update(info, dest)
     apply_update_and_restart(path)
     return path

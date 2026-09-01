@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dev",
         action="store_true",
-        help="Local DEV run: skip sync_config + silent auto-update (singleton still enforced)",
+        help="Local DEV run: skip singleton + sync_config + silent auto-update",
     )
     parser.add_argument(
         "--config",
@@ -57,12 +57,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     _ensure_path()
     _load_dotenv_quiet()
-    try:
-        from link_bridge.ssl_certs import ensure_ssl_certs
-
-        ensure_ssl_certs()
-    except Exception:
-        logging.getLogger(__name__).debug("ssl_certs setup skipped", exc_info=True)
 
     if args.config is not None:
         from link_bridge.config import set_config_path
@@ -82,26 +76,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.cli:
         return _run_cli()
 
-    if sys.platform == "win32":
+    if sys.platform == "win32" and not args.dev:
         from link_bridge.singleton import acquire_singleton
 
-        if not acquire_singleton(dev=bool(args.dev)):
+        if not acquire_singleton():
             logging.getLogger(__name__).error(
                 "Harem Link Bridge is already running — exit the tray copy first."
             )
             try:
                 import ctypes
 
-                msg = (
-                    "Harem Link Bridge DEV is already running.\n\n"
-                    "Use scripts\\relaunch_bridge_dev.py (or the VBS) to restart it."
-                    if args.dev
-                    else "Harem Link Bridge is already running (check the tray).\n\n"
-                    "Exit the existing copy before starting another."
-                )
                 ctypes.windll.user32.MessageBoxW(
                     0,
-                    msg,
+                    "Harem Link Bridge is already running (check the tray).\n\n"
+                    "Exit the existing copy before starting another.",
                     "Harem Link Bridge",
                     0x00000030,
                 )
@@ -114,12 +102,9 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config()
     if args.dev:
-        from link_bridge.dpi import enable_dpi_awareness
-
-        enable_dpi_awareness()
         cfg.check_updates = False
         cfg.start_hidden = False
-        app = LinkBridgeApp(cfg, dev=True)
+        app = LinkBridgeApp(cfg)
         app.title("Harem Link Bridge  DEV  (local source)")
         app.mainloop()
         return 0

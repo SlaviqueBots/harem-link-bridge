@@ -1,4 +1,4 @@
-"""Admin/editor Themes tab — main + secondary pools."""
+"""Admin/editor Themes tab — edit main + secondary pools from the bridge."""
 
 from __future__ import annotations
 
@@ -16,14 +16,6 @@ ErrCb = Callable[[BaseException], None]
 FetchFn = Callable[[OkCb, ErrCb], None]
 SaveFn = Callable[[list[str], list[str], OkCb, ErrCb], None]
 
-_BG_EVEN = "#1a1a1a"
-_BG_ODD = "#262626"
-_FG = "#e6e6e6"
-_SEL_BG = "#3d5a80"
-_SIDE_BG = "#121212"
-_FONT = ("Consolas", 14)
-_TEXT_W = 960
-
 
 def _parse_lines(raw: str) -> list[str]:
     out: list[str] = []
@@ -39,102 +31,6 @@ def _parse_lines(raw: str) -> list[str]:
     return out
 
 
-def _restripe(box: tk.Text) -> None:
-    box.tag_remove("odd", "1.0", tk.END)
-    box.tag_remove("even", "1.0", tk.END)
-    last = box.index("end-1c")
-    try:
-        end_line = int(float(last.split(".")[0]))
-    except Exception:
-        return
-    for i in range(1, end_line + 1):
-        tag = "odd" if (i % 2) else "even"
-        box.tag_add(tag, f"{i}.0", f"{i}.0 lineend+1c")
-    _raise_selection(box)
-
-
-def _style_box(box: tk.Text) -> None:
-    box.configure(
-        bg=_BG_EVEN,
-        fg=_FG,
-        insertbackground=_FG,
-        selectbackground=_SEL_BG,
-        selectforeground="#ffffff",
-        relief=tk.FLAT,
-        borderwidth=0,
-        highlightthickness=0,
-        padx=10,
-        pady=6,
-        font=_FONT,
-        wrap=tk.WORD,
-        width=88,
-        inactiveselectbackground=_SEL_BG,
-    )
-    box.tag_configure("even", background=_BG_EVEN, foreground=_FG, justify=tk.LEFT)
-    box.tag_configure("odd", background=_BG_ODD, foreground=_FG, justify=tk.LEFT)
-    # Line stripes must stay *under* the selection highlight or it looks unselectable.
-    box.tag_configure("sel", background=_SEL_BG, foreground="#ffffff")
-    box.tag_lower("even")
-    box.tag_lower("odd")
-    box.tag_raise("sel")
-    box._bridge_preserve_text_style = True  # type: ignore[attr-defined]
-
-
-def _raise_selection(box: tk.Text) -> None:
-    try:
-        box.tag_raise("sel")
-    except Exception:
-        pass
-
-
-class _PoolEditor(tk.Frame):
-    """Full dark field; theme text centered — no light side gutters."""
-
-    def __init__(self, master: tk.Misc) -> None:
-        super().__init__(master, bg=_SIDE_BG, highlightthickness=0)
-
-        mid = tk.Frame(self, bg=_SIDE_BG, highlightthickness=0)
-        mid.place(relx=0.5, rely=0.0, anchor=tk.N, relheight=1.0, width=_TEXT_W)
-
-        self.text = tk.Text(mid, undo=True, width=88, height=24, exportselection=True)
-        _style_box(self.text)
-        from link_bridge.theme import bind_text_clipboard
-
-        bind_text_clipboard(self.text)
-        # No scrollbar widget — wheel only (avoids the light Windows trough).
-        self.text.pack(fill=tk.BOTH, expand=True)
-        self.text.bind("<Button-1>", lambda _e: self.text.focus_set(), add="+")
-        self.text.bind("<ButtonRelease-1>", lambda _e: _raise_selection(self.text), add="+")
-        self.text.bind("<<Selection>>", lambda _e: _raise_selection(self.text), add="+")
-        self.text.bind("<KeyRelease>", lambda _e: (_restripe(self.text), _raise_selection(self.text)))
-        self.text.bind(
-            "<<Paste>>",
-            lambda _e: self.text.after_idle(lambda: _restripe(self.text)),
-        )
-        self.text.bind("<MouseWheel>", self._on_wheel, add="+")
-
-        def _fit(_event=None) -> None:
-            w = max(420, min(_TEXT_W, int(self.winfo_width() * 0.72) or _TEXT_W))
-            mid.place_configure(width=w)
-
-        self.bind("<Configure>", _fit)
-
-    def _on_wheel(self, event) -> str | None:
-        delta = int(getattr(event, "delta", 0) or 0)
-        if delta:
-            self.text.yview_scroll(-1 if delta > 0 else 1, "units")
-        return None
-
-    def set_lines(self, lines: list[str]) -> None:
-        self.text.delete("1.0", tk.END)
-        if lines:
-            self.text.insert("1.0", "\n".join(str(x) for x in lines) + "\n")
-        _restripe(self.text)
-
-    def get_lines(self) -> list[str]:
-        return _parse_lines(self.text.get("1.0", "end-1c"))
-
-
 class ThemesAdminPanel(ttk.Frame):
     def __init__(
         self,
@@ -143,7 +39,6 @@ class ThemesAdminPanel(ttk.Frame):
         fetch: FetchFn,
         save: SaveFn,
         on_log: Callable[[str], None] | None = None,
-        **_extra: Any,
     ) -> None:
         super().__init__(master)
         self._fetch = fetch
@@ -162,16 +57,21 @@ class ThemesAdminPanel(ttk.Frame):
             side=tk.LEFT, padx=(12, 0)
         )
 
-        self._nb = ttk.Notebook(self)
-        self._nb.pack(fill=tk.BOTH, expand=True)
+        paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
 
-        self.main_pool = _PoolEditor(self._nb)
-        self.sec_pool = _PoolEditor(self._nb)
-        self._nb.add(self.main_pool, text="Main pool")
-        self._nb.add(self.sec_pool, text="Secondary pool")
+        main_fr = ttk.Labelframe(paned, text="Main pool (active)", padding=6)
+        sec_fr = ttk.Labelframe(paned, text="Secondary (used)", padding=6)
+        paned.add(main_fr, weight=1)
+        paned.add(sec_fr, weight=1)
 
-        self.main_text = self.main_pool.text
-        self.sec_text = self.sec_pool.text
+        self.main_text = tk.Text(main_fr, wrap=tk.NONE, undo=True)
+        self.sec_text = tk.Text(sec_fr, wrap=tk.NONE, undo=True)
+        for box, parent in ((self.main_text, main_fr), (self.sec_text, sec_fr)):
+            ys = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=box.yview)
+            box.configure(yscrollcommand=ys.set)
+            box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            ys.pack(side=tk.RIGHT, fill=tk.Y)
 
         tip = ttk.Label(
             self,
@@ -193,8 +93,12 @@ class ThemesAdminPanel(ttk.Frame):
                 return
             main = body.get("main") or []
             sec = body.get("secondary") or []
-            self.main_pool.set_lines([str(x) for x in main])
-            self.sec_pool.set_lines([str(x) for x in sec])
+            self.main_text.delete("1.0", tk.END)
+            self.sec_text.delete("1.0", tk.END)
+            if main:
+                self.main_text.insert("1.0", "\n".join(str(x) for x in main) + "\n")
+            if sec:
+                self.sec_text.insert("1.0", "\n".join(str(x) for x in sec) + "\n")
             self.status_var.set(f"Loaded · main {len(main)} · secondary {len(sec)}")
             self._on_log(f"Themes loaded ({len(main)}+{len(sec)})")
 
@@ -207,8 +111,8 @@ class ThemesAdminPanel(ttk.Frame):
     def save(self) -> None:
         if self._busy:
             return
-        main = self.main_pool.get_lines()
-        sec = self.sec_pool.get_lines()
+        main = _parse_lines(self.main_text.get("1.0", "end-1c"))
+        sec = _parse_lines(self.sec_text.get("1.0", "end-1c"))
         if not messagebox.askyesno(
             "Save themes",
             f"Replace server pools?\nMain: {len(main)}\nSecondary: {len(sec)}",

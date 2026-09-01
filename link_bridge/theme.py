@@ -80,7 +80,7 @@ def is_dark(widget: tk.Misc | None) -> bool:
 
 
 def gallery_gap(widget: tk.Misc | None) -> int:
-    """Small gutters between thumbs (surface-colored — blackish in dark mode)."""
+    """Small gutters between thumbs (surface-colored ??? blackish in dark mode)."""
     return 3
 
 
@@ -100,7 +100,7 @@ def apply_app_theme(root: tk.Misc, mode: str = "dark") -> dict[str, str]:
     except Exception:
         pass
 
-    # Clam draws 3D edges from lightcolor/darkcolor — force them to the surface
+    # Clam draws 3D edges from lightcolor/darkcolor ??? force them to the surface
     # so we never get screaming-white borders.
     edge = {
         "background": c["bg"],
@@ -143,7 +143,7 @@ def apply_app_theme(root: tk.Misc, mode: str = "dark") -> dict[str, str]:
         background=[("active", c["bg"]), ("selected", c["bg"])],
         foreground=[("active", c["fg"]), ("selected", c["fg"])],
     )
-    # Mode strip (Undone/Done/…) uses Toolbutton — clam defaults flash white.
+    # Mode strip (Undone/Done/???) uses Toolbutton ??? clam defaults flash white.
     style.configure(
         "Toolbutton",
         background=c["bg"],

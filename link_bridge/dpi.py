@@ -36,7 +36,7 @@ def enable_dpi_awareness() -> None:
 UI_SCALE_MIN = 0.90
 UI_SCALE_MAX = 1.50
 UI_SCALE_STEP = 0.05
-# Buttons/labels. Typed fields + set names use body (Tk rounds 9pt so 95–105 looked identical).
+# Buttons/labels. Typed fields + set names use body (Tk rounds 9pt so 95???105 looked identical).
 UI_FONT_PT = 9
 BODY_FONT_PT = 12
 
@@ -52,7 +52,7 @@ def clamp_ui_scale(raw: object) -> float:
 
 
 def windows_effective_dpi(root: tk.Misc) -> float:
-    """Windows *display* scale (96 at 100%). Never use winfo_fpixels — that is panel DPI."""
+    """Windows *display* scale (96 at 100%). Never use winfo_fpixels ??? that is panel DPI."""
     if sys.platform == "win32":
         try:
             import ctypes
@@ -76,7 +76,7 @@ def windows_effective_dpi(root: tk.Misc) -> float:
 
 
 def font_px(pt: float, extra: float, dpi: float) -> int:
-    """Pixel font size for extra scale. Point sizes stay stuck at 9pt across 95–105%."""
+    """Pixel font size for extra scale. Point sizes stay stuck at 9pt across 95???105%."""
     extra = clamp_ui_scale(extra)
     try:
         dpi_f = float(dpi)
@@ -91,7 +91,7 @@ def apply_ui_scale(root: tk.Misc, extra: float = 1.0) -> float:
     """DPI via tk scaling; extra via pixel fonts on ttk chrome (buttons/tabs ignore tk scaling)."""
     extra = clamp_ui_scale(extra)
     dpi = windows_effective_dpi(root)
-    # Extra is NOT applied here — ttk Labels/Buttons/tabs ignore it on Windows.
+    # Extra is NOT applied here ??? ttk Labels/Buttons/tabs ignore it on Windows.
     try:
         root.tk.call("tk", "scaling", dpi / 72.0)
     except Exception:

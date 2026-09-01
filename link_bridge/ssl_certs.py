@@ -41,7 +41,7 @@ def ensure_ssl_certs() -> str | None:
 
     if chosen is None:
         logger.warning(
-            "No usable CA bundle found — HTTPS (Danbooru/Rule34) may fail with "
+            "No usable CA bundle found ??? HTTPS (Danbooru/Rule34) may fail with "
             "[Errno 2] No such file or directory"
         )
         return None
