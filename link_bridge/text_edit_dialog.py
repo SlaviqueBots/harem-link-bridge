@@ -180,6 +180,9 @@ def ask_text(
     win.bind("<Escape>", lambda _e: _cancel())
     win.bind("<Control-Return>", lambda _e: _save())
     win.protocol("WM_DELETE_WINDOW", _cancel)
+    from link_bridge.window_keys import bind_q_close
+
+    bind_q_close(win, on_close=_cancel)
 
     win.wait_window()
     return result["value"]
@@ -283,6 +286,9 @@ def ask_name(
     win.bind("<Escape>", lambda _e: _cancel())
     win.bind("<Return>", lambda _e: _save())
     win.protocol("WM_DELETE_WINDOW", _cancel)
+    from link_bridge.window_keys import bind_q_close
+
+    bind_q_close(win, on_close=_cancel)
 
     win.wait_window()
     return result["value"]

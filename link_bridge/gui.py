@@ -17,6 +17,26 @@ from link_bridge.ws_client import BridgeClient
 
 logger = logging.getLogger(__name__)
 
+_BALANCE_IDLE_MS = 600_000  # refresh balance every 10 minutes when idle
+_BALANCE_REFRESH_OPS = frozenset({"omni_tap_ok", "market_buy_ok"})
+
+
+def _force_window_front(win: tk.Misc, parent: tk.Misc | None = None) -> None:
+    """Deiconify and focus an update window even when the app is hidden to tray."""
+    if parent is not None:
+        if hasattr(parent, "deiconify"):
+            parent.deiconify()
+        if hasattr(parent, "lift"):
+            parent.lift()
+    if hasattr(win, "deiconify"):
+        win.deiconify()
+    if hasattr(win, "lift"):
+        win.lift()
+    if hasattr(win, "attributes"):
+        win.attributes("-topmost", True)
+    if hasattr(win, "focus_force"):
+        win.focus_force()
+
 
 class UpdateProgressDialog(tk.Toplevel):
     """Small modal window with a real progress bar during exe download."""
@@ -44,6 +64,24 @@ class UpdateProgressDialog(tk.Toplevel):
         px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
         py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
         self.geometry(f"+{px}+{py}")
+        self.show_front()
+        from link_bridge.window_keys import bind_q_close
+
+        bind_q_close(self)
+
+    def show_front(self) -> None:
+        try:
+            _force_window_front(self, self.master)
+            self.after(1200, self._clear_topmost)
+        except Exception:
+            logger.debug("update progress focus failed", exc_info=True)
+
+    def _clear_topmost(self) -> None:
+        try:
+            if self.winfo_exists():
+                self.attributes("-topmost", False)
+        except Exception:
+            pass
 
     def set_status(self, msg: str) -> None:
         self.detail_var.set(msg)
@@ -104,6 +142,7 @@ class LinkBridgeApp(tk.Tk):
         self._lock_ctrl = None
         self._lock_watcher = None
         self._roster = None
+        self._balance_poll_after: str | None = None
         self._sets = None
         self._omni_wins: list = []
         self._themes = None
@@ -122,7 +161,16 @@ class LinkBridgeApp(tk.Tk):
         except Exception:
             pass
 
+        from link_bridge.theme import palette as theme_palette
+
+        pal = theme_palette(self.cfg.ui_theme)
         self._build()
+        from link_bridge.balance_chip import BalanceChip
+
+        self._balance_chip = BalanceChip(
+            self._roster._tab_row, fg=pal["fg"], bg=pal["bg"]
+        )
+        self._roster.mount_balance_chip(self._balance_chip)
         from link_bridge.theme import apply_app_theme, schedule_theme_refresh
 
         apply_app_theme(self, self.cfg.ui_theme)
@@ -180,6 +228,7 @@ class LinkBridgeApp(tk.Tk):
             avoid_set=self._sets_avoid,
             present_set=self._sets_present,
             fetch_tamed=self._roster_fetch_tamed,
+            fetch_primed=self._roster_fetch_primed,
             fetch_market=self._market_fetch_page,
             buy_market=self._market_buy,
             should_focus_telegram=lambda: bool(self.cfg.focus_telegram),
@@ -188,6 +237,8 @@ class LinkBridgeApp(tk.Tk):
             prefer_original_open=lambda: bool(self.cfg.prefer_original_open),
             get_left_click_omni=lambda: bool(self.cfg.left_click_omni),
             set_left_click_omni=self._set_left_click_omni,
+            get_left_click_flavour=lambda: bool(self.cfg.left_click_flavour),
+            set_left_click_flavour=self._set_left_click_flavour,
             get_hide_in_any_set=lambda: bool(self.cfg.hide_in_any_set),
             set_hide_in_any_set=self._set_hide_in_any_set,
             status_var=self.status_var,
@@ -197,6 +248,14 @@ class LinkBridgeApp(tk.Tk):
             natural_thumbs=bool(self.cfg.natural_thumbs),
             preview_scale=float(self.cfg.preview_scale or 1.5),
             scroll_speed=float(self.cfg.scroll_speed or 3.0),
+            market_grid_view=bool(self.cfg.market_grid_view),
+            market_min_price=str(self.cfg.market_min_price or ""),
+            market_max_price=str(self.cfg.market_max_price or ""),
+            save_market_prices=self._save_market_prices,
+            full_image_get=lambda: bool(self.cfg.omni_full_image),
+            full_image_set=self._set_omni_full_image,
+            get_market_lot_geo=lambda: str(self.cfg.market_lot_window_geometry or ""),
+            set_market_lot_geo=self._save_market_lot_window_geometry,
             on_log=self._append_log,
         )
         self._roster.pack(fill=tk.BOTH, expand=True)
@@ -292,6 +351,17 @@ class LinkBridgeApp(tk.Tk):
             text="Tight gallery (default). Uncheck for square crop grid",
             variable=self.natural_thumbs_var,
             command=self._on_natural_thumbs_toggle,
+        ).pack(side=tk.LEFT)
+        opts5b = ttk.Frame(root)
+        opts5b.pack(fill=tk.X, **pad)
+        self.market_grid_view_var = tk.BooleanVar(
+            value=bool(self.cfg.market_grid_view)
+        )
+        ttk.Checkbutton(
+            opts5b,
+            text="Market grid view (justified gallery)",
+            variable=self.market_grid_view_var,
+            command=self._on_market_grid_view_toggle,
         ).pack(side=tk.LEFT)
         opts6 = ttk.Frame(root)
         opts6.pack(fill=tk.X, **pad)
@@ -466,6 +536,9 @@ class LinkBridgeApp(tk.Tk):
         ttk.Button(btn_row, text="Save settings", command=self.save_settings).pack(
             side=tk.LEFT, padx=(8, 0)
         )
+        ttk.Button(btn_row, text="Help", command=self._show_help).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
         ttk.Button(
             btn_row, text="Check for updates", command=lambda: self.check_updates(silent=False)
         ).pack(side=tk.LEFT, padx=(8, 0))
@@ -554,6 +627,13 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
         self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
         self.cfg.prefer_original_open = bool(self.prefer_original_var.get())
+        if hasattr(self, "market_grid_view_var"):
+            self.cfg.market_grid_view = bool(self.market_grid_view_var.get())
+        if hasattr(self, "_roster") and self._roster is not None:
+            mp = self._roster._market_panel
+            if mp is not None:
+                self.cfg.market_min_price = (mp.min_var.get() or "").strip()
+                self.cfg.market_max_price = (mp.max_var.get() or "").strip()
         if hasattr(self, "main_maximized_var"):
             self.cfg.window_state = (
                 "zoomed" if bool(self.main_maximized_var.get()) else "normal"
@@ -588,6 +668,11 @@ class LinkBridgeApp(tk.Tk):
 
         apply_ui_scale(self, getattr(self.cfg, "ui_scale", 1.0))
         schedule_theme_refresh(self, mode, delay_ms=120)
+        from link_bridge.theme import palette
+
+        pal = palette(mode)
+        if hasattr(self, "_balance_chip"):
+            self._balance_chip.apply_theme(fg=pal["fg"], bg=pal["bg"])
         host = getattr(self, "_omni_host", None)
         if host is not None:
             try:
@@ -880,6 +965,9 @@ class LinkBridgeApp(tk.Tk):
             anchor=tk.E
         )
         win.protocol("WM_DELETE_WINDOW", self._stop_tournament_alarm_ui)
+        from link_bridge.window_keys import bind_q_close
+
+        bind_q_close(win, on_close=self._stop_tournament_alarm_ui)
         win.update_idletasks()
         try:
             px = self.winfo_rootx() + max(0, (self.winfo_width() - win.winfo_width()) // 2)
@@ -1097,7 +1185,13 @@ class LinkBridgeApp(tk.Tk):
 
         def on_message(body: dict) -> None:
             if body.get("op") == "hello_ok":
-                self._ui(self._sync_themes_tab)
+                self._ui(
+                    lambda b=body: (
+                        self._apply_balance_body(b),
+                        self._sync_themes_tab(),
+                        self._arm_balance_poll(),
+                    )
+                )
 
         client = BridgeClient(
             self.cfg, on_status=on_status, on_open_url=on_open, on_message=on_message
@@ -1119,10 +1213,76 @@ class LinkBridgeApp(tk.Tk):
                     self._roster.clear() if self._roster else None,
                     self._hide_themes_tab(),
                     self._cancel_tournament_alarm_timers(),
+                    self._cancel_balance_poll(),
+                    self._balance_chip.clear() if hasattr(self, "_balance_chip") else None,
                 )
             )
 
-    def _schedule_coro(self, coro_factory, on_ok, on_err) -> None:
+    def _apply_balance_body(self, body: dict) -> None:
+        self._set_balance_chips(body)
+
+    def _set_balance_chips(self, body: dict) -> None:
+        if hasattr(self, "_balance_chip"):
+            self._balance_chip.set_from_body(body)
+        host = getattr(self, "_omni_host", None)
+        if host is not None:
+            try:
+                if host.winfo_exists():
+                    host.set_balance_from_body(body)
+            except Exception:
+                pass
+
+    def _sync_roster_balance_from_omni(self, body: dict) -> None:
+        """Omni craft responses include balance — keep roster chip in sync."""
+        if hasattr(self, "_balance_chip"):
+            self._balance_chip.set_from_body(body)
+
+    def _cancel_balance_poll(self) -> None:
+        aid = self._balance_poll_after
+        self._balance_poll_after = None
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except Exception:
+                pass
+
+    def _arm_balance_poll(self) -> None:
+        self._cancel_balance_poll()
+        self._balance_poll_after = self.after(
+            _BALANCE_IDLE_MS, self._idle_balance_refresh
+        )
+
+    def _idle_balance_refresh(self) -> None:
+        self._balance_poll_after = None
+        self._request_balance()
+
+    def _request_balance(self) -> None:
+        if self._client is None or self._loop is None:
+            return
+
+        def on_ok(body: dict) -> None:
+            if body.get("op") == "balance_ok":
+                self._apply_balance_body(body)
+            self._arm_balance_poll()
+
+        def on_err(_exc: BaseException) -> None:
+            self._arm_balance_poll()
+
+        self._schedule_coro(
+            lambda c: c.request_balance(),
+            on_ok,
+            on_err,
+            track_balance=False,
+        )
+
+    def _on_bridge_response(self, body: dict) -> None:
+        op = str(body.get("op") or "")
+        if op in _BALANCE_REFRESH_OPS:
+            self._request_balance()
+
+    def _schedule_coro(
+        self, coro_factory, on_ok, on_err, *, track_balance: bool = True
+    ) -> None:
         client = self._client
         loop = self._loop
         if client is None or loop is None or not loop.is_running():
@@ -1137,7 +1297,12 @@ class LinkBridgeApp(tk.Tk):
                     err = exc
                     self._ui(lambda e=err: on_err(e))
                     return
-                self._ui(lambda r=result: on_ok(r))
+                def _deliver(result: dict) -> None:
+                    if track_balance:
+                        self._on_bridge_response(result)
+                    on_ok(result)
+
+                self._ui(lambda r=result: _deliver(r))
 
             asyncio.create_task(_run())
 
@@ -1172,6 +1337,18 @@ class LinkBridgeApp(tk.Tk):
         self._schedule_coro(
             lambda c: c.request_roster_page(
                 page, TAMED_PAGE_SIZE, q=query, done=0, kind="tamed"
+            ),
+            on_ok,
+            on_err,
+        )
+
+    def _roster_fetch_primed(self, page: int, q: str, on_ok, on_err) -> None:
+        from link_bridge.primed import PRIMED_PAGE_SIZE
+
+        query = (q or "").strip()
+        self._schedule_coro(
+            lambda c: c.request_roster_page(
+                page, PRIMED_PAGE_SIZE, q=query, done=0, kind="primed"
             ),
             on_ok,
             on_err,
@@ -1264,6 +1441,17 @@ class LinkBridgeApp(tk.Tk):
         if self._roster is not None and hasattr(self._roster, "sync_lmb_omni_button"):
             self._roster.sync_lmb_omni_button()
 
+    def _set_left_click_flavour(self, enabled: bool) -> None:
+        from link_bridge.config import save_config
+
+        self.cfg.left_click_flavour = bool(enabled)
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        if self._roster is not None and hasattr(self._roster, "sync_lmb_flavour_button"):
+            self._roster.sync_lmb_flavour_button()
+
     def _set_hide_in_any_set(self, enabled: bool) -> None:
         from link_bridge.config import save_config
 
@@ -1333,8 +1521,16 @@ class LinkBridgeApp(tk.Tk):
                 dm_craft=self._roster_dm_craft,
                 get_flavour=self._omni_flavour_for,
                 on_silent_craft=self._on_omni_silent_craft,
+                on_balance=self._sync_roster_balance_from_omni,
             )
             self._omni_host = host
+            if hasattr(self, "_balance_chip"):
+                try:
+                    txt = str(self._balance_chip._lbl.cget("text") or "").strip()
+                    if txt.isdigit():
+                        host.set_balance_from_body({"balance": int(txt)})
+                except Exception:
+                    pass
 
             def _drop(event=None) -> None:
                 if event is not None and getattr(event, "widget", None) is not host:
@@ -1423,6 +1619,32 @@ class LinkBridgeApp(tk.Tk):
         except Exception:
             pass
 
+    def _on_market_grid_view_toggle(self) -> None:
+        flag = bool(self.market_grid_view_var.get())
+        self._set_market_grid_view(flag)
+        if getattr(self, "_roster", None) is not None:
+            self._roster.set_market_grid_view(flag)
+
+    def _save_market_prices(self, min_p: str, max_p: str) -> None:
+        min_p = (min_p or "").strip()
+        max_p = (max_p or "").strip()
+        if min_p == (self.cfg.market_min_price or "") and max_p == (
+            self.cfg.market_max_price or ""
+        ):
+            return
+        self.cfg.market_min_price = min_p
+        self.cfg.market_max_price = max_p
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _show_help(self) -> None:
+        from link_bridge.help_dialog import show_help
+        from link_bridge.updater import userscript_path
+
+        show_help(self, userscript_path=userscript_path())
+
     def _set_omni_repeat_key(self, key: str) -> None:
         from link_bridge.config import _normalize_omni_repeat_key
 
@@ -1437,6 +1659,26 @@ class LinkBridgeApp(tk.Tk):
         if not text or text == (self.cfg.omni_window_geometry or ""):
             return
         self.cfg.omni_window_geometry = text
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _save_market_lot_window_geometry(self, geo: str) -> None:
+        text = (geo or "").strip()
+        if not text or text == (self.cfg.market_lot_window_geometry or ""):
+            return
+        self.cfg.market_lot_window_geometry = text
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
+    def _set_market_grid_view(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        if flag == bool(self.cfg.market_grid_view):
+            return
+        self.cfg.market_grid_view = flag
         try:
             save_config(self.cfg)
         except Exception:
@@ -1958,6 +2200,7 @@ class LinkBridgeApp(tk.Tk):
 
         def _open_dialog() -> None:
             dialog_holder[0] = UpdateProgressDialog(self, info.version)
+            dialog_holder[0].show_front()
             ready.set()
 
         self._ui(_open_dialog)

@@ -54,6 +54,8 @@ OnSetNamesFn = Callable[[list[str]], None]
 FocusPrefFn = Callable[[], bool]
 TargetGetFn = Callable[[], str]
 TargetSetFn = Callable[[str], None]
+LeftClickOmniGetFn = Callable[[], bool]
+LeftClickOmniSetFn = Callable[[bool], None]
 BrowseUsersFn = Callable[[str, OkCb, ErrCb], None]
 
 
@@ -428,6 +430,8 @@ class TamedPanel(ttk.Frame):
         should_focus_telegram: FocusPrefFn | None = None,
         get_post_target: TargetGetFn | None = None,
         set_post_target: TargetSetFn | None = None,
+        get_left_click_omni: LeftClickOmniGetFn | None = None,
+        set_left_click_omni: LeftClickOmniSetFn | None = None,
         prefer_original_open: Callable[[], bool] | None = None,
         get_text_edit_geometry: Callable[[], str] | None = None,
         set_text_edit_geometry: Callable[[str], None] | None = None,
@@ -447,6 +451,8 @@ class TamedPanel(ttk.Frame):
         self._should_focus = should_focus_telegram or (lambda: False)
         self._get_post_target = get_post_target or (lambda: "group")
         self._set_post_target = set_post_target
+        self._get_left_click_omni = get_left_click_omni or (lambda: False)
+        self._set_left_click_omni = set_left_click_omni
         self._prefer_original = prefer_original_open or (lambda: True)
         self._get_text_geo = get_text_edit_geometry or (lambda: "")
         self._set_text_geo = set_text_edit_geometry
@@ -500,12 +506,36 @@ class TamedPanel(ttk.Frame):
             bar, text=self._target_label(), command=self._toggle_target
         )
         self._target_btn.pack(side=tk.LEFT, padx=(12, 0))
+        self._lmb_omni_btn = ttk.Button(
+            bar, text=self._lmb_omni_label(), command=self._toggle_left_click_omni
+        )
+        self._lmb_omni_btn.pack(side=tk.LEFT, padx=(6, 0))
         self.meta_var = tk.StringVar(value="Connect to load tamed cards.")
         ttk.Label(bar, textvariable=self.meta_var).pack(side=tk.LEFT, padx=(12, 0))
 
         self.grid_fr = ttk.Frame(self)
         self.grid_fr.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
         self._set_nav(False)
+
+    def _lmb_omni_label(self) -> str:
+        return (
+            "LMB → Omni: on"
+            if self._get_left_click_omni()
+            else "LMB → Omni: off"
+        )
+
+    def _toggle_left_click_omni(self) -> None:
+        nxt = not bool(self._get_left_click_omni())
+        if self._set_left_click_omni is not None:
+            self._set_left_click_omni(nxt)
+        else:
+            self.sync_lmb_omni_button()
+
+    def sync_lmb_omni_button(self) -> None:
+        try:
+            self._lmb_omni_btn.configure(text=self._lmb_omni_label())
+        except Exception:
+            pass
 
     def _post_btn_label(self) -> str:
         t = (self._get_post_target() or "group").strip().lower()
@@ -701,7 +731,7 @@ class TamedPanel(ttk.Frame):
             "<Button-1>", lambda _e, x=char_id: self._click_open_image(x, "before")
         )
         after_lbl.bind(
-            "<Button-1>", lambda _e, x=char_id: self._click_open_image(x, "after")
+            "<Button-1>", lambda _e, x=char_id: self._click_after_primary(x)
         )
         widgets: tuple[tk.Misc, ...] = (before_lbl, after_lbl) + tuple(extras)
         for w in widgets:
@@ -735,6 +765,12 @@ class TamedPanel(ttk.Frame):
             except Exception:
                 pass
         self._render_grid()
+
+    def _click_after_primary(self, char_id: int) -> None:
+        if self._get_left_click_omni() and self._open_omni_ui is not None:
+            self._open_omni_ui(int(char_id))
+            return
+        self._click_open_image(char_id, "after")
 
     def _click_open_image(self, char_id: int, side: str) -> None:
         from link_bridge.open_image import open_full_image
@@ -952,7 +988,7 @@ class TamedPanel(ttk.Frame):
                     apply_silent_craft_item(self._item_by_id(char_id), action_id)
                     if str(action_id).startswith("stadd:"):
                         self._note_set_used(str(action_id).split(":", 1)[1])
-                    if action_id in ("tr", "ptr"):
+                    if action_id in ("tr", "ptr", "ut"):
                         self._drop_char(int(char_id))
                 elif self._should_focus():
                     try:

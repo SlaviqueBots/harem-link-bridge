@@ -126,6 +126,10 @@ class MemberBrowsePanel(ttk.Frame):
         lst.bind("<Return>", self._on_click)
         lst.bind("<Escape>", lambda _e: self._close_popup())
 
+        from link_bridge.window_keys import bind_q_close
+
+        bind_q_close(pop, on_close=self._close_popup)
+
         self._popup = pop
         self._list = lst
         if self._rows:

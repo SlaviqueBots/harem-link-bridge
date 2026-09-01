@@ -407,6 +407,13 @@ class BridgeClient:
             timeout=timeout,
         )
 
+    async def request_balance(self, *, timeout: float = 15.0) -> dict[str, Any]:
+        return await self._request(
+            "balance",
+            {"op": "balance"},
+            timeout=timeout,
+        )
+
     async def request_open_omni(
         self, char_id: int, *, timeout: float = 45.0
     ) -> dict[str, Any]:
@@ -507,6 +514,7 @@ class BridgeClient:
         k = (kind or "roster").strip().lower()
         allowed = {
             "tamed",
+            "primed",
             "sets",
             "roster",
             "roster_done",

@@ -8,6 +8,8 @@ Opens the bot’s Danbooru/Rule34 **link buttons** in your desktop browser (no T
 
 Client-only. No bot tokens or server secrets live here. Compare builds to these files.
 
+**Agents:** read `link_bridge/AGENTS.md` and repo root `AGENTS.md` (§ Foremost rule, § Bot and Bridge parity) before edits.
+
 ## First users — install
 
 1. Get `HaremLinkBridge.exe` from the owner (one file).

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Harem Link Bridge — Send to Bridge
 // @namespace    https://github.com/SlaviqueBots/harem-link-bridge
-// @version      1.3.0
+// @version      1.4.0
 // @description  Send the current Danbooru / Rule34 post to Harem Link Bridge
 // @match        https://danbooru.donmai.us/posts/*
 // @match        https://*.donmai.us/posts/*

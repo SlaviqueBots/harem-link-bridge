@@ -71,6 +71,9 @@ def _show_internal(path: Path) -> None:
     lbl.image = photo  # type: ignore[attr-defined]
     lbl.pack()
     root.bind("<Escape>", lambda _e: root.destroy())
+    from link_bridge.window_keys import bind_q_close
+
+    bind_q_close(root)
 
 
 def open_full_image(url: str, *, on_err: Callable[[BaseException], None] | None = None) -> None:

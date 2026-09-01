@@ -267,5 +267,8 @@ def edit_crafting_plan(
     ttk.Button(btns, text="Save", command=_save).pack(side=tk.RIGHT, padx=(0, 8))
     win.bind("<Escape>", lambda _e: _cancel())
     win.protocol("WM_DELETE_WINDOW", _cancel)
+    from link_bridge.window_keys import bind_q_close
+
+    bind_q_close(win, on_close=_cancel)
     win.wait_window()
     return result["value"]

@@ -64,6 +64,11 @@ def apply_silent_craft_item(item: dict[str, Any] | None, action_id: str) -> None
         item["done"] = True
     elif aid == "ud":
         item["done"] = False
+    elif aid == "tm":
+        item["tamed"] = True
+        item["can_tame"] = False
+    elif aid == "ut":
+        item["tamed"] = False
 
 
 def popup_thumb_menu(
@@ -91,6 +96,7 @@ def popup_thumb_menu(
     can_edit_sets: bool = True,
     can_cycle_name: bool = False,
     is_done: bool = False,
+    extra_entries: list[tuple[str, Callable[[], None]]] | None = None,
 ) -> None:
     """Show nested bridge craft menu at the pointer."""
     menu = tk.Menu(widget, tearoff=0)
@@ -181,16 +187,10 @@ def popup_thumb_menu(
             )
         menu.add_cascade(label="Set", menu=set_m)
 
-    if can_tame or is_tamed:
-        tame = tk.Menu(menu, tearoff=0)
-        if can_tame:
-            tame.add_command(label="Mark as tamed", command=lambda: craft("tm"))
-        if is_tamed:
-            tame.add_command(label="Untame", command=lambda: craft("ut"))
-            tame.add_command(
-                label="Post tamed album (DM)", command=lambda: craft("td")
-            )
-        menu.add_cascade(label="Tame", menu=tame)
+    if can_tame:
+        menu.add_command(label="Mark tamed", command=lambda: craft("tm"))
+    elif is_tamed:
+        menu.add_command(label="Untame", command=lambda: craft("ut"))
 
     copy_m = tk.Menu(menu, tearoff=0)
     copy_m.add_command(label="Mirror card", command=lambda: craft("mi"))
@@ -272,6 +272,11 @@ def popup_thumb_menu(
             label="Register for daily cup…",
             command=lambda: on_register_cup(int(char_id)),
         )
+
+    if extra_entries:
+        menu.add_separator()
+        for label, cmd in extra_entries:
+            menu.add_command(label=label, command=cmd)
 
     try:
         menu.tk_popup(int(event.x_root), int(event.y_root))

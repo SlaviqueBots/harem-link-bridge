@@ -30,7 +30,7 @@ SilentCraftFn = Callable[[int, str], None]
 
 VIEW = 480
 VIEW_FULL = 760
-_CAP_LINES = 2
+_CAP_LINES = 1
 _KEYISH = ("omni.", "inline.", "reshape.", "refine.")
 _FALLBACK = {
     "omni.btn_hide": "Hide",
@@ -91,6 +91,10 @@ _DEFAULT_ETA_SEC: dict[str, float] = {
     "flset": 0.8,
     "rfl": 0.8,
 }
+
+_NO_PROGRESS_OPS = frozenset(
+    {"mi", "dn", "ud", "hi", "sh", "fl", "flset", "rfl", "cp", "uo", "dmp", "vr"}
+)
 
 _ADAPTIVE_ETA: dict[str, float] = dict(_DEFAULT_ETA_SEC)
 
@@ -443,15 +447,35 @@ def _apply_omni_theme(root: tk.Misc, mode: str | None = None) -> dict[str, str]:
         relief=[("pressed", "flat"), ("!pressed", "flat")],
     )
     style.configure(
+        "Omni.TabActive.TButton",
+        background=bg3,
+        foreground=fg,
+        borderwidth=0,
+        focusthickness=0,
+        focuscolor=bg3,
+        padding=(8, 2),
+        relief="flat",
+        lightcolor=bg3,
+        darkcolor=bg3,
+        bordercolor=bg3,
+    )
+    style.map(
+        "Omni.TabActive.TButton",
+        background=[("active", hover)],
+        foreground=[("active", fg)],
+    )
+    style.configure(
         "Omni.TNotebook",
         background=bg,
         borderwidth=0,
         relief="flat",
-        tabmargins=(2, 2, 2, 0),
+        tabmargins=(0, 0, 0, 0),
         lightcolor=bg,
         darkcolor=bg,
         bordercolor=bg,
     )
+    # Card ids live in the host toolbar — hide the notebook tab strip.
+    style.layout("Omni.TNotebook", [("Notebook.client", {"sticky": "nswe"})])
     style.configure(
         "Omni.TNotebook.Tab",
         background=bg2,
@@ -505,7 +529,7 @@ def _section(parent: tk.Misc, title: str) -> tuple[ttk.Frame, ttk.Frame]:
     """Flat section: muted title + body frame (no groove border)."""
     wrap = ttk.Frame(parent, style="Omni.TFrame")
     ttk.Label(wrap, text=title.upper(), style="Omni.Muted.TLabel").pack(
-        anchor=tk.W, pady=(0, 2)
+        anchor=tk.W, pady=(0, 1)
     )
     body = ttk.Frame(wrap, style="Omni.TFrame")
     body.pack(fill=tk.X)
@@ -590,6 +614,25 @@ def stable_omni_craft_rows(
     while rows and all(cell is None for cell in rows[-1]):
         rows.pop()
     return rows
+
+
+def _client_status(detail: str = "", *, busy: bool = False) -> str:
+    """English-only status for Bridge (never show Russian server detail in the UI)."""
+    if busy:
+        return "Working…"
+    d = (detail or "").strip()
+    if not d:
+        return "Ready"
+    low = d.lower()
+    if low.startswith("mirror:"):
+        return "Mirrored"
+    if low in ("ok", "ready"):
+        return "Ready"
+    if any("\u0400" <= c <= "\u04ff" for c in d):
+        if "…" in d or "меня" in low:
+            return "Working…"
+        return "Ready"
+    return d
 
 
 def repeat_key_label(keysym: str) -> str:
@@ -681,6 +724,8 @@ class OmniPanel(ttk.Frame):
         get_flavour: FlavourGetFn | None = None,
         on_silent_craft: SilentCraftFn | None = None,
         seed_panel: OmniPanel | None = None,
+        on_host_status: Callable[[str], None] | None = None,
+        on_balance: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         super().__init__(master, style="Omni.TFrame")
         self._char_id = int(char_id)
@@ -705,6 +750,9 @@ class OmniPanel(ttk.Frame):
         self._get_flavour = get_flavour
         self._on_silent_craft = on_silent_craft
         self._seed_panel = seed_panel
+        self._set_host_status = on_host_status or (lambda _s: None)
+        self._on_balance = on_balance
+        self._last_status = "Loading…"
         self._busy = False
         self._busy_gen = 0
         self._photo = None
@@ -724,53 +772,61 @@ class OmniPanel(ttk.Frame):
         self._anim_data: bytes | None = None
         self._img_video_still = False
         self._last_repeat: dict[str, Any] | None = None
+        self._panel_bg = _BG
 
         body = ttk.Frame(self, style="Omni.TFrame")
-        body.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        body.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
         # Compact dark dock under the image.
         controls = ttk.Frame(body, style="Omni.TFrame")
         controls.pack(side=tk.BOTTOM, fill=tk.X)
 
-        head = ttk.Frame(controls, style="Omni.TFrame")
-        head.pack(fill=tk.X)
-        self._name_var = tk.StringVar(value=f"#{char_id}")
-        ttk.Label(
-            head,
-            textvariable=self._name_var,
-            style="Omni.TLabel",
-            font=("Segoe UI", 9, "bold"),
-        ).pack(side=tk.LEFT, anchor=tk.W)
-        ttk.Button(
-            head, text="Refresh", command=self.reload, width=8, style="Omni.TButton"
-        ).pack(side=tk.RIGHT)
-        ttk.Button(
-            head, text="Plan", command=self._edit_plan, width=6, style="Omni.TButton"
-        ).pack(side=tk.RIGHT, padx=(0, 4))
-        self._status_var = tk.StringVar(value="Loading…")
-        self._status_lbl = ttk.Label(
-            head, textvariable=self._status_var, style="Omni.TLabel", wraplength=280
-        )
-        self._status_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 6))
+        self._craft_fr = tk.Frame(controls, bg=self._panel_bg, highlightthickness=0, bd=0)
+        self._craft_fr.pack(fill=tk.X)
 
-        self._prog = ttk.Progressbar(
-            controls, mode="determinate", maximum=100, style="Omni.Horizontal.TProgressbar"
-        )
         self._prog_after: str | None = None
         self._prog_t0 = 0.0
         self._prog_eta = 12.0
-        self._prog.pack(fill=tk.X, pady=(2, 2))
-
-        craft_title = "Exclude tag" if self._mode == "refine" else "Alter image"
-        craft_wrap, self._craft_fr = _section(controls, craft_title)
-        craft_wrap.pack(fill=tk.X, pady=(4, 2))
+        self._prog_visible = False
 
         mid = ttk.Frame(controls, style="Omni.TFrame")
-        mid.pack(fill=tk.X, pady=(0, 2))
+        mid.pack(fill=tk.X)
         mid.columnconfigure(0, weight=1)
         mid.columnconfigure(1, weight=2)
-        status_wrap, self._status_fr = _section(mid, "Card")
-        status_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        status_wrap, status_body = _section(mid, "Card")
+        status_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self._status_tools = ttk.Frame(status_body, style="Omni.TFrame")
+        self._status_tools.pack(fill=tk.X, pady=(0, 2))
+        tk.Button(
+            self._status_tools,
+            text="Plan",
+            command=self._edit_plan,
+            bg=_STATUS_BG,
+            fg=_FG,
+            activebackground=_STATUS_BG,
+            relief=tk.FLAT,
+            bd=0,
+            padx=6,
+            pady=2,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Button(
+            self._status_tools,
+            text="Refresh",
+            command=self.reload,
+            bg=_STATUS_BG,
+            fg=_FG,
+            activebackground=_STATUS_BG,
+            relief=tk.FLAT,
+            bd=0,
+            padx=6,
+            pady=2,
+            font=("Segoe UI", 9),
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+        self._status_fr = ttk.Frame(status_body, style="Omni.TFrame")
+        self._status_fr.pack(fill=tk.X)
         link_wrap, self._link_fr = _section(mid, "Open in browser")
         link_wrap.grid(row=0, column=1, sticky="nsew")
 
@@ -786,10 +842,10 @@ class OmniPanel(ttk.Frame):
             borderwidth=0,
             highlightthickness=0,
             padx=6,
-            pady=2,
+            pady=1,
             font=("Segoe UI", 8),
         )
-        self._cap.pack(fill=tk.X, pady=(2, 0))
+        self._cap.pack(fill=tk.X, pady=(1, 0))
 
         # Image fills everything above the dock; plan chips sit on the right.
         self._mid = ttk.Frame(body, style="Omni.TFrame")
@@ -810,6 +866,14 @@ class OmniPanel(ttk.Frame):
         )
         self._img_lbl.pack(fill=tk.BOTH, expand=True)
         self._img_lbl.bind("<Button-1>", self._open_original)
+        self._prog_accent = "#5865f2"
+        self._prog_fill = tk.Frame(
+            self._left,
+            bg=self._prog_accent,
+            height=3,
+            highlightthickness=0,
+            bd=0,
+        )
         self._left.bind("<Configure>", self._on_img_configure)
         self.bind("<Configure>", self._on_panel_configure)
         if self._mode == "refine" and self._seed_panel is not None:
@@ -820,17 +884,32 @@ class OmniPanel(ttk.Frame):
         else:
             self.after(30, self.reload)
         self.after(40, self.refresh_plan_rail)
+        self._set_status("Loading…")
+
+    def _set_status(self, detail: str = "", *, busy: bool | None = None) -> None:
+        flag = self._busy if busy is None else bool(busy)
+        text = _client_status(detail, busy=flag)
+        self._last_status = text
+        self._set_host_status(text)
+
+    def publish_status_to_host(self) -> None:
+        self._set_host_status(self._last_status)
 
     def apply_ui_theme(self, pal: dict[str, str]) -> None:
         bg = pal.get("bg") or _BG
         canvas = pal.get("canvas") or "#111214"
         fg = pal.get("fg") or _FG
         muted = pal.get("muted") or _MUTED
+        self._panel_bg = bg
+        accent = pal.get("accent") or "#5865f2"
+        self._prog_accent = accent
         try:
             self._left.configure(bg=canvas)
             self._plan_rail.configure(bg=canvas)
             self._img_lbl.configure(bg=canvas, fg=muted)
             self._cap.configure(bg=pal.get("log_bg") or canvas, fg=fg, insertbackground=fg)
+            self._craft_fr.configure(bg=bg)
+            self._prog_fill.configure(bg=accent)
         except Exception:
             pass
         if self._img_bytes:
@@ -893,12 +972,6 @@ class OmniPanel(ttk.Frame):
             self.reload()
             return
         self._state = dict(sib._state)
-        name = str(self._state.get("name") or "")
-        ex = str(self._state.get("exclude") or "")
-        title = f"Refine #{self._char_id} · {name}".strip(" ·")
-        if ex:
-            title = f"{title} −{ex}"
-        self._name_var.set(title)
         if self._on_title is not None:
             self._on_title(f"R #{self._char_id}")
         self._set_caption(str(self._state.get("caption") or ""))
@@ -927,16 +1000,16 @@ class OmniPanel(ttk.Frame):
             if show:
                 self._paint_preview(show)
 
-        self._status_var.set("Loading refine…")
+        self._set_status("Loading refine…")
 
         def on_ok(body: dict) -> None:
             if body.get("op") == "omni_state_ok":
                 self._apply_state(body, acquired=False, repaint_image=False)
             else:
-                self._status_var.set(str(body.get("error") or "failed"))
+                self._set_status(str(body.get("error") or "failed"))
 
         def on_err(exc: BaseException) -> None:
-            self._status_var.set(f"Load failed: {exc}")
+            self._set_status(f"Load failed: {exc}")
 
         self._fetch_state(self._char_id, on_ok, on_err, self._mode)
 
@@ -1129,6 +1202,7 @@ class OmniPanel(ttk.Frame):
             self._photo = photo
             self._fit_box = box
             self._img_lbl.configure(image=photo, text="")
+            self._raise_overlay()
             return True
         except Exception as exc:
             self._img_lbl.configure(image="", text="×")
@@ -1140,7 +1214,7 @@ class OmniPanel(ttk.Frame):
         url = self._media_url()
         if url:
             if self._full_image_get():
-                self._status_var.set("Loading original…")
+                self._set_status("Loading original…")
             self._paint_preview(url)
         else:
             self._stop_anim()
@@ -1163,11 +1237,11 @@ class OmniPanel(ttk.Frame):
         else:
             url = (st.get("image_url") or st.get("file_url") or st.get("preview_url") or "").strip()
         if not url:
-            self._status_var.set("No original URL")
+            self._set_status("No original URL")
             return
         if is_video_url(url) or self._img_video_still:
-            self._status_var.set("Opening video in your player…")
-        open_full_image(url, on_err=lambda e: self._status_var.set(f"Open failed: {e}"))
+            self._set_status("Opening video in your player…")
+        open_full_image(url, on_err=lambda e: self._set_status(f"Open failed: {e}"))
 
     def _fallback_still_url(self, failed_url: str) -> str:
         st = self._state or {}
@@ -1225,19 +1299,19 @@ class OmniPanel(ttk.Frame):
                         raise RuntimeError("decode failed")
                     if want_full and not self._busy:
                         if self._img_video_still:
-                            self._status_var.set("Video — click image to play")
+                            self._set_status("Video — click image to play")
                         elif is_gif_url(url) or kind == "gif":
                             detail = str(self._state.get("detail") or "Ready")
-                            self._status_var.set(f"{detail} · gif")
+                            self._set_status(f"{detail} · gif")
                         else:
-                            self._status_var.set(str(self._state.get("detail") or "Ready"))
+                            self._set_status(str(self._state.get("detail") or ""))
                 except Exception as exc:
                     self._img_lbl.configure(image="", text="×")
                     logger.debug("omni preview decode failed: %s", exc)
                     if want_full:
                         still = self._fallback_still_url(url)
                         if still:
-                            self._status_var.set("Original failed — showing preview")
+                            self._set_status("Original failed — showing preview")
                             self._paint_preview(still)
 
             try:
@@ -1252,7 +1326,7 @@ class OmniPanel(ttk.Frame):
                 if want_full:
                     still = self._fallback_still_url(url)
                     if still:
-                        self._status_var.set("Original failed — showing preview")
+                        self._set_status("Original failed — showing preview")
                         self._paint_preview(still)
                         return
                 self._img_lbl.configure(image="", text="×")
@@ -1269,7 +1343,7 @@ class OmniPanel(ttk.Frame):
             if not ffmpeg_available():
                 still = self._fallback_still_url(url)
                 if still:
-                    self._status_var.set("Video — click image to play")
+                    self._set_status("Video — click image to play")
                     self._paint_preview(still)
                 else:
                     self._img_lbl.configure(image="", text="video")
@@ -1335,14 +1409,11 @@ class OmniPanel(ttk.Frame):
         self._state = body
         if "flavour" in body:
             self._state["flavour"] = str(body.get("flavour") or "")
-        name = str(body.get("name") or "")
-        title = f"#{self._char_id} · {name}".strip(" ·")
-        if bool(body.get("is_original")):
-            title = f"{title} · original"
-        if self._mode == "refine":
-            ex = str(body.get("exclude") or "")
-            title = f"Refine {title}" + (f" −{ex}" if ex else "")
-        self._name_var.set(title)
+        if self._on_balance is not None and "balance" in body:
+            try:
+                self._on_balance(body)
+            except Exception:
+                logger.debug("omni balance notify failed", exc_info=True)
         if self._on_title is not None:
             short = f"#{self._char_id}"
             if self._mode == "refine":
@@ -1353,7 +1424,7 @@ class OmniPanel(ttk.Frame):
         show = self._media_url(body)
         if repaint_image and needs_media_repaint:
             if self._mode != "refine" and self._full_image_get() and show and show != prev:
-                self._status_var.set("Loading original…")
+                self._set_status("Loading original…")
             self._paint_preview(show)
         if acquired and show and self._beep_get():
             _soft_beep()
@@ -1382,11 +1453,11 @@ class OmniPanel(ttk.Frame):
             and show != prev
         )
         if bool(body.get("busy")):
-            self._status_var.set("Working…")
+            self._set_status("", busy=True)
         elif loading_full:
-            self._status_var.set("Loading original…")
+            self._set_status("Loading original…")
         else:
-            self._status_var.set(str(body.get("detail") or "Ready"))
+            self._set_status(str(body.get("detail") or ""))
         now_done = bool(body.get("done"))
         if self._on_done_changed is not None and now_done != prev_done:
             self._on_done_changed(self._char_id, now_done)
@@ -1432,6 +1503,7 @@ class OmniPanel(ttk.Frame):
             ).pack(pady=(0, 18))
         wrap.place(relx=0.5, rely=0.48, anchor="center")
         self._notice = wrap
+        self._raise_overlay()
 
         def _drop() -> None:
             try:
@@ -1443,6 +1515,20 @@ class OmniPanel(ttk.Frame):
                 self._notice = None
 
         self.after(3200, _drop)
+
+    def _raise_overlay(self) -> None:
+        notice = getattr(self, "_notice", None)
+        if notice is not None:
+            try:
+                if notice.winfo_exists():
+                    notice.tkraise()
+            except Exception:
+                pass
+        if getattr(self, "_prog_visible", False):
+            try:
+                self._prog_fill.tkraise()
+            except Exception:
+                pass
 
     def refresh_plan_rail(self) -> None:
         from link_bridge.browser_open import open_url
@@ -1601,8 +1687,45 @@ class OmniPanel(ttk.Frame):
                 self._on_plan_changed(self._char_id)
             except Exception:
                 logger.debug("omni plan notify failed", exc_info=True)
-        self._status_var.set(f"Plan ← {title}")
+        self._set_status(f"Plan ← {title}")
         return {"ok": True, "detail": f"Added to {title}"}
+
+    def _place_progress_fill(self, value: float) -> None:
+        pct = max(0.0, min(100.0, float(value)))
+        if pct < 0.5:
+            if self._prog_visible:
+                try:
+                    self._prog_fill.place_forget()
+                except Exception:
+                    pass
+                self._prog_visible = False
+            return
+        try:
+            self._prog_fill.place(
+                relx=0,
+                rely=1.0,
+                relwidth=pct / 100.0,
+                height=3,
+                anchor="sw",
+            )
+            self._prog_fill.lift()
+            self._raise_overlay()
+            self._prog_visible = True
+        except Exception:
+            pass
+
+    def _show_progress_bar(self) -> None:
+        """No-op until _tick_progress paints the first visible slice."""
+        return
+
+    def _hide_progress_bar(self) -> None:
+        if not self._prog_visible:
+            return
+        try:
+            self._prog_fill.place_forget()
+        except Exception:
+            pass
+        self._prog_visible = False
 
     def _start_progress(self, op: str) -> None:
         import time
@@ -1613,10 +1736,6 @@ class OmniPanel(ttk.Frame):
             _ADAPTIVE_ETA.get(self._prog_op, _DEFAULT_ETA_SEC.get(self._prog_op, 3.0))
         )
         self._prog_t0 = time.monotonic()
-        try:
-            self._prog["value"] = 3.0
-        except Exception:
-            pass
         self._tick_progress()
 
     def _tick_progress(self) -> None:
@@ -1627,19 +1746,8 @@ class OmniPanel(ttk.Frame):
             return
         elapsed = max(0.0, time.monotonic() - self._prog_t0)
         value = calculate_omni_progress(elapsed, self._prog_eta)
-        try:
-            self._prog["value"] = value
-        except Exception:
-            return
+        self._place_progress_fill(value)
         self._prog_after = self.after(40, self._tick_progress)
-
-    def _reset_prog_zero(self) -> None:
-        if self._busy:
-            return
-        try:
-            self._prog["value"] = 0
-        except Exception:
-            pass
 
     def _stop_progress(self, *, done: bool) -> None:
         import time
@@ -1656,12 +1764,9 @@ class OmniPanel(ttk.Frame):
                 t0 = getattr(self, "_prog_t0", 0.0)
                 if op and t0 > 0.0:
                     update_adaptive_eta(op, time.monotonic() - t0)
-                self._prog["value"] = 100
-                self.after(220, self._reset_prog_zero)
-            else:
-                self._prog["value"] = 0
         except Exception:
             pass
+        self._hide_progress_bar()
 
     def _clear_btns(self) -> None:
         for b in self._btns:
@@ -1810,12 +1915,6 @@ class OmniPanel(ttk.Frame):
         self, parent: tk.Misc, spec: dict[str, Any] | None, row: int, col: int
     ) -> None:
         if spec is None:
-            sp = tk.Frame(parent, height=28, highlightthickness=0, bd=0)
-            try:
-                sp.configure(bg=parent.winfo_toplevel().cget("bg") or _BG)
-            except Exception:
-                pass
-            sp.grid(row=row, column=col, sticky="nsew", padx=1, pady=1)
             return
         hidden = bool(self._state.get("hidden"))
         done = bool(self._state.get("done"))
@@ -1862,14 +1961,25 @@ class OmniPanel(ttk.Frame):
         for child in list(parent.winfo_children()):
             child.destroy()
         cols = 8
-        for c in range(cols):
-            parent.columnconfigure(c, weight=1, uniform=f"omni{id(parent)}")
-        for r, row in enumerate(grid):
+        trimmed: list[list[dict[str, Any] | None]] = []
+        for row in grid:
             cells = list(row[:cols])
-            while len(cells) < cols:
-                cells.append(None)
-            for c, spec in enumerate(cells):
-                self._place_slot_cell(parent, spec, r, c)
+            while cells and cells[-1] is None:
+                cells.pop()
+            if not cells:
+                continue
+            trimmed.append(cells)
+        if not trimmed:
+            return
+        panel_bg = getattr(self, "_panel_bg", _BG)
+        parent.columnconfigure(0, weight=1)
+        for r, cells in enumerate(trimmed):
+            specs = [s for s in cells if s is not None]
+            if not specs:
+                continue
+            row_fr = tk.Frame(parent, bg=panel_bg, highlightthickness=0, bd=0)
+            row_fr.grid(row=r, column=0, sticky="ew", pady=(0, 1))
+            self._place_row(row_fr, specs, 0)
 
     def _place_flow(self, parent: tk.Misc, specs: list[dict[str, Any]], cols: int) -> None:
         """Pack buttons into a dense N-column grid (no half-empty Telegram rows)."""
@@ -1897,12 +2007,14 @@ class OmniPanel(ttk.Frame):
                 op = str(btn.get("op") or "")
                 url = str(btn.get("url") or "")
                 urls = btn.get("urls") or []
+                if op == "vr":
+                    kind = "status"
                 if not kind:
                     if (url or urls) and not op:
                         kind = "link"
                     elif op == "rf":
                         kind = "mode"
-                    elif op in ("dn", "ud", "hi", "sh", "fl", "flset", "rfl", "mi"):
+                    elif op in ("dn", "ud", "hi", "sh", "fl", "flset", "rfl", "mi", "vr"):
                         kind = "status"
                     else:
                         kind = "craft"
@@ -1975,23 +2087,23 @@ class OmniPanel(ttk.Frame):
         self._busy = True
         self._busy_gen += 1
         gen = self._busy_gen
-        self._status_var.set("DM preview…")
+        self._set_status("DM preview…")
 
         def on_ok(body: dict) -> None:
             if gen != self._busy_gen:
                 return
             self._busy = False
             if body.get("op") == "dm_craft_ok":
-                self._status_var.set("DM preview sent")
+                self._set_status("DM preview sent")
                 self._on_log(f"omni DM preview #{self._char_id}")
             else:
-                self._status_var.set(str(body.get("error") or "DM failed"))
+                self._set_status(str(body.get("error") or "DM failed"))
 
         def on_err(exc: BaseException) -> None:
             if gen != self._busy_gen:
                 return
             self._busy = False
-            self._status_var.set(f"DM failed: {exc}")
+            self._set_status(f"DM failed: {exc}")
 
         self._dm_preview(self._char_id, on_ok, on_err)
 
@@ -2013,7 +2125,7 @@ class OmniPanel(ttk.Frame):
             if self._on_open_refine is not None:
                 self._on_open_refine(self._char_id)
             else:
-                self._status_var.set("Refine unavailable")
+                self._set_status("Refine unavailable")
             return
         if op == "dmp":
             self._click_dm_preview()
@@ -2026,8 +2138,9 @@ class OmniPanel(ttk.Frame):
         self._busy = True
         self._busy_gen += 1
         gen = self._busy_gen
-        self._status_var.set(f"{label}…")
-        self._start_progress(op)
+        self._set_status(f"{label}…", busy=True)
+        if op not in _NO_PROGRESS_OPS:
+            self._start_progress(op)
         prev_before = self._media_url()
 
         def _unstick() -> None:
@@ -2035,7 +2148,7 @@ class OmniPanel(ttk.Frame):
                 return
             self._busy = False
             self._stop_progress(done=False)
-            self._status_var.set("Still working — tap Refresh if stuck.")
+            self._set_status("Still working — tap Refresh if stuck.")
 
         self.after(150000, _unstick)
 
@@ -2045,17 +2158,42 @@ class OmniPanel(ttk.Frame):
             self._busy = False
             op_name = str(body.get("op") or "")
             if op_name == "omni_tap_ok":
-                acquired = self._media_url(body) != prev_before and op in (
-                    "rs", "rm", "po", "pa", "sl", "sm", "au", "am", "ti", "uo", "ld", "rj",
+                if op == "mi":
+                    self._stop_progress(done=False)
+                    detail = str(body.get("detail") or "")
+                    sub = ""
+                    if detail.startswith("mirror:"):
+                        try:
+                            sub = f"→ #{int(detail.split(':', 1)[1])}"
+                        except (ValueError, IndexError):
+                            pass
+                    self._flash_center_notice("MIRRORED", sub)
+                    self.after(80, self._raise_overlay)
+                    self.after(300, self._raise_overlay)
+                acquired = self._media_url(body) != prev_before and (
+                    op
+                    in (
+                        "rs",
+                        "rm",
+                        "po",
+                        "pa",
+                        "sl",
+                        "sm",
+                        "au",
+                        "am",
+                        "ti",
+                        "uo",
+                        "ld",
+                        "rj",
+                    )
+                    or (op == "vr" and str(arg_s or "") == "k")
                 )
                 self._apply_state(body, acquired=acquired)
                 self._on_log(f"{self._mode} {op} #{self._char_id}: {body.get('detail') or 'ok'}")
-                if op == "mi":
-                    self._flash_center_notice("MIRRORED")
             else:
                 self._stop_progress(done=False)
                 err = body.get("error") or body.get("detail") or "failed"
-                self._status_var.set(str(err))
+                self._set_status(str(err))
                 if body.get("buttons"):
                     self._apply_state(body, acquired=False)
 
@@ -2064,7 +2202,7 @@ class OmniPanel(ttk.Frame):
                 return
             self._busy = False
             self._stop_progress(done=False)
-            self._status_var.set(f"Failed: {exc}")
+            self._set_status(f"Failed: {exc}")
 
         self._tap(self._char_id, op, arg_s, on_ok, on_err, self._mode)
 
@@ -2074,7 +2212,7 @@ class OmniPanel(ttk.Frame):
             fallback=self._last_repeat,
         )
         if spec is None:
-            self._status_var.set("No last craft to repeat")
+            self._set_status("No last craft to repeat")
             return
         text = _pretty_label(
             str(spec.get("text") or "Repeat"),
@@ -2100,13 +2238,13 @@ class OmniPanel(ttk.Frame):
             if body.get("op") == "omni_state_ok":
                 self._apply_state(body, acquired=False)
             if status:
-                self._status_var.set(status)
+                self._set_status(status)
 
         def on_err(exc: BaseException) -> None:
             if status:
-                self._status_var.set(f"{status} (refresh: {exc})")
+                self._set_status(f"{status} (refresh: {exc})")
             else:
-                self._status_var.set(f"Refresh failed: {exc}")
+                self._set_status(f"Refresh failed: {exc}")
 
         self._fetch_state(self._char_id, on_ok, on_err, self._mode)
 
@@ -2141,7 +2279,7 @@ class OmniPanel(ttk.Frame):
         self._busy = True
         self._busy_gen += 1
         gen = self._busy_gen
-        self._status_var.set(f"{label}…")
+        self._set_status(f"{label}…", busy=True)
 
         def on_ok(body: dict) -> None:
             if gen != self._busy_gen:
@@ -2149,7 +2287,7 @@ class OmniPanel(ttk.Frame):
             self._busy = False
             if body.get("op") != "dm_craft_ok":
                 err = body.get("error") or body.get("detail") or "failed"
-                self._status_var.set(str(err))
+                self._set_status(str(err))
                 return
             detail = str(body.get("detail") or "flavour saved").strip()
             self._state["flavour"] = flavour_text
@@ -2165,23 +2303,23 @@ class OmniPanel(ttk.Frame):
             if gen != self._busy_gen:
                 return
             self._busy = False
-            self._status_var.set(f"Failed: {exc}")
+            self._set_status(f"Failed: {exc}")
 
         self._dm_craft(self._char_id, craft, on_ok, on_err)
 
     def reload(self) -> None:
         self._busy = False
         self._busy_gen += 1
-        self._status_var.set("Loading…")
+        self._set_status("Loading…")
 
         def on_ok(body: dict) -> None:
             if body.get("op") == "omni_state_ok":
                 self._apply_state(body, acquired=False)
             else:
-                self._status_var.set(str(body.get("error") or "failed"))
+                self._set_status(str(body.get("error") or "failed"))
 
         def on_err(exc: BaseException) -> None:
-            self._status_var.set(f"Load failed: {exc}")
+            self._set_status(f"Load failed: {exc}")
 
         self._fetch_state(self._char_id, on_ok, on_err, self._mode)
 
@@ -2216,6 +2354,7 @@ class OmniHost(tk.Toplevel):
         dm_craft: DmCraftFn | None = None,
         get_flavour: FlavourGetFn | None = None,
         on_silent_craft: SilentCraftFn | None = None,
+        on_balance: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         super().__init__(master)
         self.title("Omnicraft")
@@ -2252,25 +2391,31 @@ class OmniHost(tk.Toplevel):
         self._dm_craft = dm_craft
         self._get_flavour = get_flavour
         self._on_silent_craft = on_silent_craft
+        self._on_balance_external = on_balance
         self._capturing_repeat = False
         self._omni_keypress = self._on_omni_key
         self._tabs: dict[tuple[int, str], tuple[ttk.Frame, OmniPanel]] = {}
+        self._tab_order: list[tuple[int, str]] = []
+        self._active_key: tuple[int, str] | None = None
         self._wip_busy = False
         self._geo_save_after: str | None = None
         self._geo_ready = False
 
-        top = ttk.Frame(self, padding=(4, 2), style="Omni.TFrame")
+        top = ttk.Frame(self, padding=(4, 0), style="Omni.TFrame")
         top.pack(fill=tk.BOTH, expand=True)
         head = ttk.Frame(top, style="Omni.TFrame")
         head.pack(fill=tk.X)
         self._beep_var = tk.BooleanVar(value=bool(self._beep_get()))
-        ttk.Checkbutton(
+        self._beep_cb = ttk.Checkbutton(
             head,
             text="Beep",
             style="Omni.TCheckbutton",
             variable=self._beep_var,
             command=lambda: self._beep_set(bool(self._beep_var.get())),
-        ).pack(side=tk.LEFT, padx=(0, 8))
+            takefocus=0,
+        )
+        self._beep_cb.pack(side=tk.LEFT, padx=(0, 8))
+        self._beep_cb.bind("<KeyPress-space>", lambda _e: "break")
         self._full_var = tk.BooleanVar(value=bool(self._full_image_get()))
         ttk.Checkbutton(
             head,
@@ -2294,16 +2439,21 @@ class OmniHost(tk.Toplevel):
             style="Omni.TCheckbutton",
             variable=self._wip_var,
         ).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(
+        self._tab_chips = ttk.Frame(head, style="Omni.TFrame")
+        self._tab_chips.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 8))
+        self._host_status_var = tk.StringVar(value="")
+        ttk.Label(
             head,
-            text="Close tab",
-            command=self._close_current,
-            width=10,
-            style="Omni.TButton",
-        ).pack(side=tk.RIGHT)
+            textvariable=self._host_status_var,
+            style="Omni.Muted.TLabel",
+        ).pack(side=tk.RIGHT, padx=(8, 8))
+        from link_bridge.balance_chip import BalanceChip
 
-        self._nb = ttk.Notebook(top, style="Omni.TNotebook")
-        self._nb.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
+        self._balance_chip = BalanceChip(head, fg=pal["fg"], bg=pal["bg"])
+        self._balance_chip.pack(side=tk.RIGHT, padx=(0, 4))
+
+        self._body = ttk.Frame(top, style="Omni.TFrame")
+        self._body.pack(fill=tk.BOTH, expand=True)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         if self._want_zoomed:
             try:
@@ -2348,16 +2498,10 @@ class OmniHost(tk.Toplevel):
         self._sync_repeat_label()
 
     def _current_panel(self) -> OmniPanel | None:
-        try:
-            cur = self._nb.select()
-        except Exception:
+        if self._active_key is None:
             return None
-        if not cur:
-            return None
-        for _key, (fr, panel) in self._tabs.items():
-            if str(fr) == str(cur):
-                return panel
-        return None
+        pair = self._tabs.get(self._active_key)
+        return pair[1] if pair else None
 
     def toggle_fullscreen(self) -> None:
         try:
@@ -2396,9 +2540,23 @@ class OmniHost(tk.Toplevel):
                         return None
                 except Exception:
                     return None
+        from link_bridge.window_keys import (
+            _control_down,
+            _widget_accepts_typing,
+            is_physical_q_key,
+            is_physical_w_key,
+        )
+
         keysym = str(getattr(event, "keysym", "") or "")
+        if _control_down(event) and is_physical_w_key(event):
+            if not _widget_accepts_typing(widget):
+                self._close_current()
+                return "break"
         if keysym.lower() == "f11":
             self.toggle_fullscreen()
+            return "break"
+        if is_physical_q_key(event) and not self._capturing_repeat:
+            self._on_close()
             return "break"
         if keysym.lower() == "escape":
             try:
@@ -2512,6 +2670,18 @@ class OmniHost(tk.Toplevel):
         self._persist_geometry()
         self.destroy()
 
+    def set_balance_from_body(self, body: dict[str, Any]) -> None:
+        if hasattr(self, "_balance_chip"):
+            self._balance_chip.set_from_body(body)
+
+    def _notify_balance(self, body: dict[str, Any]) -> None:
+        self.set_balance_from_body(body)
+        if self._on_balance_external is not None:
+            try:
+                self._on_balance_external(body)
+            except Exception:
+                logger.debug("omni balance forward failed", exc_info=True)
+
     def _on_full_image_toggle(self) -> None:
         enabled = bool(self._full_var.get())
         self._full_image_set(enabled)
@@ -2521,13 +2691,110 @@ class OmniHost(tk.Toplevel):
             except Exception:
                 logger.debug("omni full-image refresh failed", exc_info=True)
 
+    def _tab_label(self, key: tuple[int, str]) -> str:
+        cid, mode = key
+        return f"R #{cid}" if mode == "refine" else f"#{cid}"
+
+    def _current_tab_frame(self) -> ttk.Frame | None:
+        if self._active_key is None:
+            return None
+        pair = self._tabs.get(self._active_key)
+        return pair[0] if pair else None
+
+    def _show_tab(self, key: tuple[int, str]) -> None:
+        pair = self._tabs.get(key)
+        if pair is None:
+            return
+        fr, _panel = pair
+        for k, (f, _p) in self._tabs.items():
+            if k == key:
+                f.pack(fill=tk.BOTH, expand=True)
+            else:
+                try:
+                    f.pack_forget()
+                except Exception:
+                    pass
+        self._active_key = key
+        self._sync_tab_chips()
+        pair = self._tabs.get(key)
+        if pair is not None:
+            try:
+                pair[1].publish_status_to_host()
+            except Exception:
+                pass
+
+    def _sync_tab_chips(self) -> None:
+        if not hasattr(self, "_tab_chips"):
+            return
+        for child in list(self._tab_chips.winfo_children()):
+            child.destroy()
+        cur = self._current_tab_frame()
+        for key, (fr, _panel) in self._tabs.items():
+            label = self._tab_label(key)
+            selected = cur is not None and str(fr) == str(cur)
+            chip = ttk.Frame(self._tab_chips, style="Omni.TFrame")
+            chip.pack(side=tk.LEFT, padx=(0, 4))
+            tab_btn = ttk.Button(
+                chip,
+                text=label,
+                width=max(5, len(label) + 1),
+                style="Omni.TabActive.TButton" if selected else "Omni.TButton",
+                command=lambda f=fr: self._select_tab(f),
+            )
+            tab_btn.pack(side=tk.LEFT)
+            close_btn = ttk.Button(
+                chip,
+                text="×",
+                width=2,
+                style="Omni.TButton",
+                command=lambda k=key: self._close_tab(k),
+            )
+
+            def _show_close(_event=None, btn=close_btn) -> None:
+                if not btn.winfo_ismapped():
+                    btn.pack(side=tk.LEFT)
+
+            def _hide_close(_event=None, wrap=chip, btn=close_btn) -> None:
+                def _maybe() -> None:
+                    try:
+                        px, py = wrap.winfo_pointerxy()
+                        target = wrap.winfo_containing(px, py)
+                    except Exception:
+                        target = None
+                    w = target
+                    while w is not None:
+                        if w is wrap:
+                            return
+                        try:
+                            w = w.master
+                        except Exception:
+                            break
+                    try:
+                        btn.pack_forget()
+                    except Exception:
+                        pass
+
+                wrap.after_idle(_maybe)
+
+            chip.bind("<Enter>", _show_close, add="+")
+            chip.bind("<Leave>", _hide_close, add="+")
+            tab_btn.bind("<Enter>", _show_close, add="+")
+            close_btn.bind("<Enter>", _show_close, add="+")
+            close_btn.bind("<Leave>", _hide_close, add="+")
+
+    def _select_tab(self, fr: ttk.Frame) -> None:
+        for key, (f, _panel) in self._tabs.items():
+            if f is fr:
+                self._show_tab(key)
+                return
+
     def open_card(self, char_id: int, *, mode: str = "omni") -> None:
         mode = "refine" if mode == "refine" else "omni"
         key = (int(char_id), mode)
         existing = self._tabs.get(key)
         if existing is not None:
             tab, panel = existing
-            self._nb.select(tab)
+            self._show_tab(key)
             if mode == "refine":
                 omni_pair = self._tabs.get((int(char_id), "omni"))
                 if omni_pair is not None:
@@ -2539,7 +2806,7 @@ class OmniHost(tk.Toplevel):
             self.focus_force()
             return
 
-        tab = ttk.Frame(self._nb, style="Omni.TFrame")
+        tab = ttk.Frame(self._body, style="Omni.TFrame")
         seed_panel = None
         if mode == "refine":
             omni_pair = self._tabs.get((int(char_id), "omni"))
@@ -2558,7 +2825,7 @@ class OmniHost(tk.Toplevel):
             set_text_geo=self._set_text_geo,
             on_log=self._on_log,
             on_done_changed=self._on_done_changed,
-            on_title=lambda t, fr=tab: self._nb.tab(fr, text=t),
+            on_title=lambda _t, fr=tab: self._sync_tab_chips(),
             on_open_refine=lambda cid: self.open_card(int(cid), mode="refine"),
             wip_get=lambda: bool(self._wip_var.get()),
             on_wip_next=self._wip_advance,
@@ -2568,13 +2835,15 @@ class OmniHost(tk.Toplevel):
             dm_craft=self._dm_craft,
             get_flavour=self._get_flavour,
             on_silent_craft=self._on_silent_craft,
+            on_balance=self._notify_balance,
             seed_panel=seed_panel,
+            on_host_status=lambda s: self._host_status_var.set(s),
         )
         panel.pack(fill=tk.BOTH, expand=True)
-        label = f"R #{char_id}" if mode == "refine" else f"#{char_id}"
-        self._nb.add(tab, text=label)
         self._tabs[key] = (tab, panel)
-        self._nb.select(tab)
+        if key not in self._tab_order:
+            self._tab_order.append(key)
+        self._show_tab(key)
         self.lift()
         self.focus_force()
 
@@ -2589,17 +2858,11 @@ class OmniHost(tk.Toplevel):
                 logger.debug("omni plan rail refresh failed", exc_info=True)
 
     def first_omni_panel(self) -> OmniPanel | None:
-        """Leftmost notebook tab (tab 1) — the card the craft button targets."""
-        try:
-            tabs = self._nb.tabs()
-        except Exception:
-            return None
-        if not tabs:
-            return None
-        first = str(tabs[0])
-        for _key, (fr, panel) in self._tabs.items():
-            if str(fr) == first:
-                return panel
+        """First-opened omni tab — the card the craft button targets."""
+        for key in self._tab_order:
+            if key[1] != "omni" or key not in self._tabs:
+                continue
+            return self._tabs[key][1]
         return None
 
     def ingest_browser_craft(self, url: str, tags: dict[str, Any] | None) -> dict[str, Any]:
@@ -2644,7 +2907,7 @@ class OmniHost(tk.Toplevel):
         if existing is not None:
             fr, _panel = existing
             try:
-                self._nb.forget(fr)
+                fr.pack_forget()
             except Exception:
                 pass
             try:
@@ -2652,24 +2915,44 @@ class OmniHost(tk.Toplevel):
             except Exception:
                 pass
             del self._tabs[key]
+            if key in self._tab_order:
+                self._tab_order.remove(key)
+            if self._active_key == key:
+                self._active_key = None
         self.open_card(int(new_cid), mode="omni")
         self._on_log(f"WIP → #{new_cid}")
 
-    def _close_current(self) -> None:
+    def _close_tab(self, key: tuple[int, str]) -> None:
+        pair = self._tabs.get(key)
+        if pair is None:
+            return
+        fr, _panel = pair
         try:
-            cur = self._nb.select()
+            fr.pack_forget()
         except Exception:
-            return
-        if not cur:
-            return
-        for key, (fr, _panel) in list(self._tabs.items()):
-            if str(fr) == str(cur):
-                self._nb.forget(fr)
-                fr.destroy()
-                del self._tabs[key]
-                break
-        if not self._tabs:
+            pass
+        try:
+            fr.destroy()
+        except Exception:
+            pass
+        del self._tabs[key]
+        if key in self._tab_order:
+            self._tab_order.remove(key)
+        if self._active_key == key:
+            self._active_key = None
+        if self._tabs:
+            nxt = next((k for k in self._tab_order if k in self._tabs), None)
+            if nxt is None:
+                nxt = next(iter(self._tabs))
+            self._show_tab(nxt)
+        else:
+            self._sync_tab_chips()
             self._on_close()
+
+    def _close_current(self) -> None:
+        if self._active_key is None:
+            return
+        self._close_tab(self._active_key)
 
 
 # Back-compat alias used by older call sites.

@@ -1,4 +1,4 @@
-"""Paged roster: Undone / Done / Flavoured / Unflavoured / Sets / Tamed / Market."""
+"""Paged roster: Undone / Done / Flavoured / Unflavoured / Sets / Taming / Market."""
 
 from __future__ import annotations
 
@@ -50,12 +50,15 @@ TargetSetFn = Callable[[str], None]
 PreferOriginalFn = Callable[[], bool]
 LeftClickOmniGetFn = Callable[[], bool]
 LeftClickOmniSetFn = Callable[[bool], None]
+LeftClickFlavourGetFn = Callable[[], bool]
+LeftClickFlavourSetFn = Callable[[bool], None]
 HideInAnySetGetFn = Callable[[], bool]
 HideInAnySetSetFn = Callable[[bool], None]
 TextGeoGetFn = Callable[[], str]
 TextGeoSetFn = Callable[[str], None]
 BrowseUsersFn = Callable[[str, OkCb, ErrCb], None]
 FetchTamedFn = Callable[[int, str, OkCb, ErrCb], None]
+FetchPrimedFn = Callable[[int, str, OkCb, ErrCb], None]
 FetchMarketFn = Callable[..., None]
 BuyMarketFn = Callable[[int, OkCb, ErrCb], None]
 StatusVarFn = Callable[[], tk.StringVar | None]
@@ -84,7 +87,7 @@ def _item_ids(body: dict[str, Any]) -> tuple[int, ...]:
 
 
 class RosterPanel(ttk.Frame):
-    """Undone | Done | Flavoured | Unflavoured | Sets | Tamed | Market."""
+    """Undone | Done | Flavoured | Unflavoured | Sets | Taming | Market."""
 
     def __init__(
         self,
@@ -102,6 +105,7 @@ class RosterPanel(ttk.Frame):
         avoid_set: AvoidSetFn | None = None,
         present_set: PresentSetFn | None = None,
         fetch_tamed: FetchTamedFn | None = None,
+        fetch_primed: FetchPrimedFn | None = None,
         fetch_market: FetchMarketFn | None = None,
         buy_market: BuyMarketFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
@@ -110,6 +114,8 @@ class RosterPanel(ttk.Frame):
         prefer_original_open: PreferOriginalFn | None = None,
         get_left_click_omni: LeftClickOmniGetFn | None = None,
         set_left_click_omni: LeftClickOmniSetFn | None = None,
+        get_left_click_flavour: LeftClickFlavourGetFn | None = None,
+        set_left_click_flavour: LeftClickFlavourSetFn | None = None,
         get_hide_in_any_set: HideInAnySetGetFn | None = None,
         set_hide_in_any_set: HideInAnySetSetFn | None = None,
         status_var: tk.StringVar | None = None,
@@ -119,6 +125,14 @@ class RosterPanel(ttk.Frame):
         natural_thumbs: bool = False,
         preview_scale: float = 1.5,
         scroll_speed: float = 3.0,
+        market_grid_view: bool = True,
+        market_min_price: str = "",
+        market_max_price: str = "",
+        save_market_prices: Callable[[str, str], None] | None = None,
+        full_image_get: Callable[[], bool] | None = None,
+        full_image_set: Callable[[bool], None] | None = None,
+        get_market_lot_geo: Callable[[], str] | None = None,
+        set_market_lot_geo: Callable[[str], None] | None = None,
         on_log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
@@ -134,6 +148,7 @@ class RosterPanel(ttk.Frame):
         self._avoid_set = avoid_set
         self._present_set = present_set
         self._fetch_tamed = fetch_tamed
+        self._fetch_primed = fetch_primed
         self._fetch_market = fetch_market
         self._buy_market = buy_market
         self._fetch_browse_users = fetch_browse_users
@@ -143,6 +158,8 @@ class RosterPanel(ttk.Frame):
         self._prefer_original = prefer_original_open or (lambda: True)
         self._get_left_click_omni = get_left_click_omni or (lambda: False)
         self._set_left_click_omni = set_left_click_omni
+        self._get_left_click_flavour = get_left_click_flavour or (lambda: True)
+        self._set_left_click_flavour = set_left_click_flavour
         self._get_hide_in_any_set = get_hide_in_any_set or (lambda: False)
         self._set_hide_in_any_set = set_hide_in_any_set
         self._status_var = status_var
@@ -151,6 +168,14 @@ class RosterPanel(ttk.Frame):
         self._natural_thumbs = bool(natural_thumbs)
         self._preview_scale = max(0.5, min(2.0, float(preview_scale or 1.5)))
         self._scroll_speed = max(0.25, min(6.0, float(scroll_speed or 3.0)))
+        self._market_grid_view = bool(market_grid_view)
+        self._market_min_price = (market_min_price or "").strip()
+        self._market_max_price = (market_max_price or "").strip()
+        self._save_market_prices = save_market_prices
+        self._full_image_get = full_image_get or (lambda: False)
+        self._full_image_set = full_image_set or (lambda _v: None)
+        self._get_market_lot_geo = get_market_lot_geo or (lambda: "")
+        self._set_market_lot_geo = set_market_lot_geo
         self._on_log = on_log or (lambda _s: None)
         self._pending_media: dict[int, dict[str, Any]] = {}
         self._page = 0
@@ -199,7 +224,7 @@ class RosterPanel(ttk.Frame):
             ("flavoured", "Flavoured"),
             ("unflavoured", "Unflavoured"),
             ("sets", "Sets"),
-            ("tamed", "Tamed"),
+            ("tamed", "Taming"),
             ("market", "Market"),
         )
         for mode, label in _labels:
@@ -236,7 +261,13 @@ class RosterPanel(ttk.Frame):
                 on_pick=self._browse_pick_member,
                 on_log=self._on_log,
             )
-            self._roster_browse.pack(side=tk.RIGHT, padx=(6, 2), pady=(1, 0))
+            self._roster_browse.pack(side=tk.RIGHT, padx=(2, 2), pady=(1, 0))
+
+            self._balance_slot = ttk.Frame(self._tab_row)
+            self._balance_slot.pack(side=tk.RIGHT, padx=(4, 0))
+        else:
+            self._balance_slot = ttk.Frame(self._tab_row)
+            self._balance_slot.pack(side=tk.RIGHT, padx=(4, 6))
 
         self._roster_body = ttk.Frame(self)
         self._roster_body.pack(fill=tk.BOTH, expand=True)
@@ -276,13 +307,54 @@ class RosterPanel(ttk.Frame):
             self._sets_panel.pack(fill=tk.BOTH, expand=True)
 
         self._tamed_body = ttk.Frame(self)
+        self._tamed_sub_var = tk.StringVar(value="pairs")
+        self._tamed_sub_row = ttk.Frame(self._tamed_body)
+        self._tamed_sub_row.pack(fill=tk.X, pady=(4, 0))
+        for val, label in (("pairs", "Tamed"), ("primed", "Primed")):
+            ttk.Radiobutton(
+                self._tamed_sub_row,
+                text=label,
+                value=val,
+                variable=self._tamed_sub_var,
+                command=self._on_tamed_sub_changed,
+                style="Toolbutton",
+            ).pack(side=tk.LEFT, padx=(0, 4))
+        self._tamed_pairs_body = ttk.Frame(self._tamed_body)
+        self._tamed_primed_body = ttk.Frame(self._tamed_body)
         self._tamed_panel = None
+        self._primed_panel = None
         if fetch_tamed is not None and post_grid is not None:
             from link_bridge.tamed import TamedPanel
 
             self._tamed_panel = TamedPanel(
-                self._tamed_body,
+                self._tamed_pairs_body,
                 fetch_tamed=fetch_tamed,
+                post_grid=post_grid,
+                open_omni=open_omni,
+                open_omni_ui=open_omni_ui,
+                register_cup=register_cup,
+                dm_craft=dm_craft,
+                should_focus_telegram=should_focus_telegram,
+                get_post_target=self._get_post_target,
+                set_post_target=self._on_target_from_child,
+                get_left_click_omni=self._get_left_click_omni,
+                set_left_click_omni=self._set_left_click_omni,
+                prefer_original_open=self._prefer_original,
+                get_text_edit_geometry=self._get_text_geo,
+                set_text_edit_geometry=self._set_text_geo,
+                fetch_browse_users=self._fetch_browse_users,
+                preview_scale=self._preview_scale,
+                get_set_names=self._own_set_names,
+                on_set_names=self._remember_set_names,
+                on_log=on_log,
+            )
+            self._tamed_panel.pack(fill=tk.BOTH, expand=True)
+        if fetch_primed is not None and post_grid is not None:
+            from link_bridge.primed import PrimedPanel
+
+            self._primed_panel = PrimedPanel(
+                self._tamed_primed_body,
+                fetch_primed=fetch_primed,
                 post_grid=post_grid,
                 open_omni=open_omni,
                 open_omni_ui=open_omni_ui,
@@ -296,11 +368,15 @@ class RosterPanel(ttk.Frame):
                 set_text_edit_geometry=self._set_text_geo,
                 fetch_browse_users=self._fetch_browse_users,
                 preview_scale=self._preview_scale,
+                scroll_speed=self._scroll_speed,
+                get_left_click_omni=self._get_left_click_omni,
+                set_left_click_omni=self._set_left_click_omni,
                 get_set_names=self._own_set_names,
                 on_set_names=self._remember_set_names,
                 on_log=on_log,
             )
-            self._tamed_panel.pack(fill=tk.BOTH, expand=True)
+            self._primed_panel.pack(fill=tk.BOTH, expand=True)
+        self._show_tamed_sub("pairs")
 
         self._market_body = ttk.Frame(self)
         self._market_panel = None
@@ -313,11 +389,28 @@ class RosterPanel(ttk.Frame):
                 buy_listing=buy_market,
                 prefer_original_open=self._prefer_original,
                 preview_scale=self._preview_scale,
+                scroll_speed=self._scroll_speed,
+                grid_view=self._market_grid_view,
+                min_price=self._market_min_price,
+                max_price=self._market_max_price,
+                save_market_prices=self._save_market_prices,
+                full_image_get=self._full_image_get,
+                full_image_set=self._full_image_set,
+                get_lot_window_geo=self._get_market_lot_geo,
+                set_lot_window_geo=self._set_market_lot_geo,
                 on_log=on_log,
             )
             self._market_panel.pack(fill=tk.BOTH, expand=True)
 
         self._set_nav(False)
+
+    def set_market_grid_view(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        if flag == self._market_grid_view:
+            return
+        self._market_grid_view = flag
+        if self._market_panel is not None:
+            self._market_panel.set_grid_view(flag)
 
     def set_natural_thumbs(self, enabled: bool) -> None:
         flag = bool(enabled)
@@ -336,6 +429,8 @@ class RosterPanel(ttk.Frame):
             self._sets_panel.set_preview_scale(self._preview_scale)
         if self._tamed_panel is not None:
             self._tamed_panel.set_preview_scale(self._preview_scale)
+        if self._primed_panel is not None:
+            self._primed_panel.set_preview_scale(self._preview_scale)
         if self._market_panel is not None:
             self._market_panel.set_preview_scale(self._preview_scale)
         for g in self._pane_gallery.values():
@@ -360,6 +455,18 @@ class RosterPanel(ttk.Frame):
                     g.set_scroll_speed(self._scroll_speed)
                 except Exception:
                     pass
+        if self._market_panel is not None and hasattr(self._market_panel, "set_scroll_speed"):
+            try:
+                self._market_panel.set_scroll_speed(self._scroll_speed)
+            except Exception:
+                pass
+        if self._primed_panel is not None and hasattr(
+            self._primed_panel, "set_scroll_speed"
+        ):
+            try:
+                self._primed_panel.set_scroll_speed(self._scroll_speed)
+            except Exception:
+                pass
 
     def remove_char_from_view(self, char_id: int) -> None:
         """Pull a card out of the current page (e.g. Done while on Undone)."""
@@ -459,6 +566,13 @@ class RosterPanel(ttk.Frame):
             else "LMB → Omni: off"
         )
 
+    def _lmb_flavour_label(self) -> str:
+        return (
+            "LMB → Flavour: on"
+            if self._get_left_click_flavour()
+            else "LMB → Flavour: off"
+        )
+
     def _hide_in_any_set_label(self) -> str:
         return (
             "Hide in-set: on"
@@ -491,11 +605,47 @@ class RosterPanel(ttk.Frame):
             self._set_left_click_omni(nxt)
         self.sync_lmb_omni_button()
 
+    def _toggle_left_click_flavour(self) -> None:
+        cur = bool(self._get_left_click_flavour())
+        nxt = not cur
+        if self._set_left_click_flavour is not None:
+            self._set_left_click_flavour(nxt)
+        else:
+            self.sync_lmb_flavour_button()
+
     def sync_lmb_omni_button(self) -> None:
         try:
             self._lmb_omni_btn.configure(text=self._lmb_omni_label())
         except Exception:
             pass
+        if self._primed_panel is not None and hasattr(
+            self._primed_panel, "sync_lmb_omni_button"
+        ):
+            self._primed_panel.sync_lmb_omni_button()
+        if self._tamed_panel is not None and hasattr(
+            self._tamed_panel, "sync_lmb_omni_button"
+        ):
+            self._tamed_panel.sync_lmb_omni_button()
+
+    def sync_lmb_flavour_button(self) -> None:
+        try:
+            self._lmb_flavour_btn.configure(text=self._lmb_flavour_label())
+        except Exception:
+            pass
+
+    def _sync_flavour_toolbar(self) -> None:
+        """LMB → Flavour toggle only on Flavoured / Unflavoured tabs."""
+        try:
+            btn = self._lmb_flavour_btn
+        except AttributeError:
+            return
+        show = self._mode in ("flavoured", "unflavoured")
+        if show:
+            if not btn.winfo_ismapped():
+                btn.pack(side=tk.LEFT, padx=(6, 0))
+            self.sync_lmb_flavour_button()
+        else:
+            btn.pack_forget()
 
     def _toggle_hide_in_any_set(self) -> None:
         cur = bool(self._get_hide_in_any_set())
@@ -539,6 +689,10 @@ class RosterPanel(ttk.Frame):
             self._tamed_panel, "sync_target_button"
         ):
             self._tamed_panel.sync_target_button()
+        if self._primed_panel is not None and hasattr(
+            self._primed_panel, "sync_target_button"
+        ):
+            self._primed_panel.sync_target_button()
 
     def _own_set_names(self) -> list[str]:
         return list(self._set_names)
@@ -628,6 +782,9 @@ class RosterPanel(ttk.Frame):
             bar, text=self._lmb_omni_label(), command=self._toggle_left_click_omni
         )
         self._lmb_omni_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self._lmb_flavour_btn = ttk.Button(
+            bar, text=self._lmb_flavour_label(), command=self._toggle_left_click_flavour
+        )
         self._hide_in_set_btn = ttk.Button(
             bar,
             text=self._hide_in_any_set_label(),
@@ -644,6 +801,7 @@ class RosterPanel(ttk.Frame):
             self._pane_fr[mode] = fr
         self._pane_fr["undone"].pack(fill=tk.BOTH, expand=True)
         self.grid_fr.bind("<Configure>", self._on_grid_resize)
+        self._sync_flavour_toolbar()
 
     def _browse_pick_roster(self, username: str) -> None:
         """Load this user's roster immediately (Search field is just a mirror)."""
@@ -664,7 +822,10 @@ class RosterPanel(ttk.Frame):
                 self._sets_panel._browse_pick_user(username)
             return
         if self._mode == "tamed":
-            if self._tamed_panel is not None:
+            if self._tamed_sub_var.get() == "primed":
+                if self._primed_panel is not None:
+                    self._primed_panel._browse_pick_user(username)
+            elif self._tamed_panel is not None:
                 self._tamed_panel._browse_pick_user(username)
             return
         if self._mode == "market":
@@ -675,6 +836,8 @@ class RosterPanel(ttk.Frame):
         if self._mode == "sets":
             return "sets"
         if self._mode == "tamed":
+            if self._tamed_sub_var.get() == "primed":
+                return "primed"
             return "tamed"
         if self._mode == "flavoured":
             return "roster_flavoured"
@@ -691,7 +854,10 @@ class RosterPanel(ttk.Frame):
         if self._mode == "sets":
             panel.set_labels(title="sets", unit="sets")
         elif self._mode == "tamed":
-            panel.set_labels(title="tamed", unit="tamed")
+            if self._tamed_sub_var.get() == "primed":
+                panel.set_labels(title="primed", unit="primed")
+            else:
+                panel.set_labels(title="tamed", unit="tamed")
         elif self._mode == "market":
             panel.set_labels(title="market", unit="lots")
         elif self._mode == "flavoured":
@@ -749,6 +915,10 @@ class RosterPanel(ttk.Frame):
             except Exception:
                 pass
 
+    def mount_balance_chip(self, chip: tk.Misc) -> None:
+        """Top-right on the mode tab row — no grid height consumed."""
+        chip.pack(in_=self._balance_slot, side=tk.RIGHT)
+
     def _shrink_tab_bar(self) -> None:
         return
 
@@ -772,6 +942,7 @@ class RosterPanel(ttk.Frame):
             return
         self._done = self._roster_done_arg()
         self._show_roster_mode()
+        self._sync_flavour_toolbar()
         self._sync_roster_browse_labels()
         self.load_page(0)
 
@@ -795,13 +966,42 @@ class RosterPanel(ttk.Frame):
         if self._sets_panel is not None:
             self._sets_panel.refresh_sets()
 
+    def _show_tamed_sub(self, which: str | None = None) -> None:
+        sub = (which or self._tamed_sub_var.get() or "pairs").strip()
+        if sub not in ("pairs", "primed"):
+            sub = "pairs"
+        self._tamed_sub_var.set(sub)
+        if sub == "primed":
+            self._tamed_pairs_body.pack_forget()
+            if not self._tamed_primed_body.winfo_ismapped():
+                self._tamed_primed_body.pack(fill=tk.BOTH, expand=True)
+        else:
+            self._tamed_primed_body.pack_forget()
+            if not self._tamed_pairs_body.winfo_ismapped():
+                self._tamed_pairs_body.pack(fill=tk.BOTH, expand=True)
+
+    def _on_tamed_sub_changed(self) -> None:
+        self._show_tamed_sub()
+        self._sync_roster_browse_labels()
+        if self._tamed_sub_var.get() == "primed":
+            if self._primed_panel is not None:
+                if not self._primed_panel.has_cached_view():
+                    self._primed_panel.load_page(0)
+        elif self._tamed_panel is not None:
+            self._tamed_panel.load_page(0)
+
     def _show_tamed_mode(self) -> None:
         self._roster_body.pack_forget()
         self._sets_body.pack_forget()
         self._market_body.pack_forget()
         if not self._tamed_body.winfo_ismapped():
             self._tamed_body.pack(fill=tk.BOTH, expand=True)
-        if self._tamed_panel is not None:
+        self._show_tamed_sub()
+        if self._tamed_sub_var.get() == "primed":
+            if self._primed_panel is not None:
+                if not self._primed_panel.has_cached_view():
+                    self._primed_panel.load_page(0)
+        elif self._tamed_panel is not None:
             self._tamed_panel.load_page(0)
 
     def _show_market_mode(self) -> None:
@@ -811,7 +1011,12 @@ class RosterPanel(ttk.Frame):
         if not self._market_body.winfo_ismapped():
             self._market_body.pack(fill=tk.BOTH, expand=True)
         if self._market_panel is not None:
-            self._market_panel.load_page(0)
+            try:
+                self._market_panel._claim_wheel()
+            except Exception:
+                pass
+            if not self._market_panel.has_cached_view():
+                self._market_panel.load_page(0)
 
     def _on_grid_resize(self, _event=None) -> None:
         if self._resize_after is not None:
@@ -878,7 +1083,10 @@ class RosterPanel(ttk.Frame):
                 self._sets_panel.refresh_sets()
             return
         if self._mode == "tamed":
-            if self._tamed_panel is not None:
+            if self._tamed_sub_var.get() == "primed":
+                if self._primed_panel is not None:
+                    self._primed_panel.refresh()
+            elif self._tamed_panel is not None:
                 self._tamed_panel.refresh()
             return
         if self._mode == "market":
@@ -1036,6 +1244,8 @@ class RosterPanel(ttk.Frame):
             self._sets_panel.clear()
         if self._tamed_panel is not None:
             self._tamed_panel.clear()
+        if self._primed_panel is not None:
+            self._primed_panel.clear()
 
     def _view_key(
         self, mode: str, ids: tuple[int, ...]
@@ -1563,6 +1773,12 @@ class RosterPanel(ttk.Frame):
         self._register_cup(int(char_id), on_ok, on_err)
 
     def _click_primary(self, char_id: int) -> None:
+        if (
+            self._mode in ("flavoured", "unflavoured")
+            and self._get_left_click_flavour()
+        ):
+            self._edit_flavour(char_id)
+            return
         if self._get_left_click_omni() and self._open_omni_ui is not None:
             self._open_omni_ui(int(char_id))
             return

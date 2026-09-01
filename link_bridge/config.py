@@ -79,6 +79,13 @@ class BridgeConfig:
     omni_repeat_key: str = "space"
     # Last Omnicraft host geometry, e.g. "720x520+80+60". Empty = center default.
     omni_window_geometry: str = ""
+    # Market lot inspector window geometry.
+    market_lot_window_geometry: str = ""
+    # Market tab: justified gallery (like roster grid view).
+    market_grid_view: bool = True
+    # Market price filter (persisted; empty = no bound).
+    market_min_price: str = ""
+    market_max_price: str = ""
     # Tk state: "normal" or "zoomed" (Windows maximized).
     omni_window_state: str = "zoomed"
     # App chrome: "dark" (default) or "light" (classic bright look).
@@ -87,6 +94,8 @@ class BridgeConfig:
     ui_scale: float = 1.0
     # Left-click opens in-client Omnicraft instead of the image viewer.
     left_click_omni: bool = False
+    # Flavoured / Unflavoured tabs: left-click opens the flavour editor (wins over omni).
+    left_click_flavour: bool = True
     # Roster: hide cards that already belong to any set.
     hide_in_any_set: bool = False
     # Mouse-wheel scroll strength (0.25–6.0). Default 3.0 with smooth easing.
@@ -161,12 +170,17 @@ def load_config() -> BridgeConfig:
         omni_full_image=bool(raw.get("omni_full_image", False)),
         omni_repeat_key=_normalize_omni_repeat_key(raw.get("omni_repeat_key", "space")),
         omni_window_geometry=str(raw.get("omni_window_geometry") or ""),
+        market_lot_window_geometry=str(raw.get("market_lot_window_geometry") or ""),
+        market_grid_view=bool(raw.get("market_grid_view", True)),
+        market_min_price=str(raw.get("market_min_price") or ""),
+        market_max_price=str(raw.get("market_max_price") or ""),
         omni_window_state=_normalize_window_state(
             raw.get("omni_window_state", "zoomed")
         ),
         ui_theme=_normalize_ui_theme(raw.get("ui_theme", "dark")),
         ui_scale=_clamp_ui_scale(raw.get("ui_scale", 1.0)),
         left_click_omni=bool(raw.get("left_click_omni", False)),
+        left_click_flavour=bool(raw.get("left_click_flavour", True)),
         hide_in_any_set=bool(raw.get("hide_in_any_set", False)),
         scroll_speed=_clamp_scroll_speed(raw.get("scroll_speed", 3.0)),
         browser_hook_enabled=bool(raw.get("browser_hook_enabled", True)),
