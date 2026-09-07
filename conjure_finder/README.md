@@ -1,54 +1,24 @@
-# Conjure Finder (PC tool)
+# Conjure Finder
 
-> **Deprecated as a standalone app.** Use the **Conjure** tab in **Harem Link Bridge** (`python -m link_bridge --dev`). See `conjure_finder/AGENTS.md`.
+Finds the cheapest `/conjure` path for a Danbooru or Rule34 post: compares direct summon cost against roster paths (conjure artist → Author, conjure character → reshape), cheapest first.
 
+Ships as the **Conjure** tab inside Harem Link Bridge; the code here is the shared engine + a standalone Tkinter GUI.
 
-Standalone English GUI — cheapest `/conjure` path for a Danbooru or Rule34 post.
+## Run
 
-**Does not modify the bot.**
+Standalone (needs Python 3 with Tkinter):
 
-## One-click launch (PC)
+```bash
+python -m conjure_finder
+```
 
-In the project folder (next to `bot/`), double-click:
+Paste post URLs (one per line = separate jobs; space-separated on one line = any-of group). Copy the resulting command(s) into the bot chat.
 
-**`Conjure Finder.vbs`** ← use this on Windows
+## API keys
 
-Fallbacks: `Conjure Finder.bat` (Windows) or `Conjure Finder.sh` (Linux/macOS).
+Danbooru username + API key and Rule34 key + user id go in **Settings…** inside the app (stored locally, never in this repo).
 
-First click installs deps and pulls API keys if needed. Optional: Desktop shortcut to the `.vbs`.
+## Notes
 
-## API keys / Settings
-
-Open **Settings…** in the app to enter:
-
-- Danbooru username + API key
-- Rule34 API key + user id
-
-Saved to **`conjure_finder.env`** next to `bot/` (gitignored). That file overrides any shared project `.env` so a distributed build never needs your server keys.
-
-During development, keys already in `.env` still work until you save Settings.
-
-## Behavior
-
-- Paste one or many URLs (**one per line** = separate searches). Danbooru and Rule34 queues run **in parallel**.
-- **Same line** (space or `|`) = **any-of** group: success = get any of those posts (variants / same author sets).
-- Max 2 tags; pricing matches the bot (general 25 / premium 50).
-- 1 free reroll ⇒ pool ≤ 2 is a single-conjure guarantee.
-- Same-tag pity (bot): expected sessions/cost assume without-replacement until the pool reshuffles. Any-of groups score with K acceptable hits in the pool.
-- Also considers roster paths: conjure artist → Author, or conjure character → reshape / reshape_m (solo vs not). Rule34 AI uses `/conjure_hell_slop`.
-- Searches cheapest-first; stops on the first guarantee per job.
-- English UI; Copy command(s) copies every successful result.
-
-## Requirements
-
-Python 3 with tcl/tk (Windows installer options: PATH + tcl/tk).
-
-## Personal vs share builds
-
-| | Personal (this repo) | Friends (portable exe) |
-|---|---|---|
-| Keys | Your `.env` / `conjure_finder.env` | Empty — they use **Settings…** |
-| Launch | `Conjure Finder.vbs` here | **`Conjure Finder.exe`** (no Python) |
-| Refresh share | `python scripts/build_conjure_finder_exe.py` | Writes `Projects/Conjure Finder.exe` |
-
-Source-only share (needs Python): `python scripts/export_conjure_finder_share.py --zip`
+- Pricing mirrors the bot: regular tags 25, character/title/author tags 50.
+- One free reroll per summon; cheapest-first search stops at the first guarantee.

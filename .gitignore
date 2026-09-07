@@ -13,3 +13,4 @@ build/
 dist/
 *.log
 thumb_cache/
+crafting_plans.json
