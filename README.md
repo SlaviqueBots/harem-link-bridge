@@ -1,6 +1,6 @@
 # Harem Link Bridge
 
-> 100% vibecoded — written entirely with AI assistance, no hand-written code.
+> 100% vibecoded — no hand-written code.
 
 Windows desktop companion for a Telegram harem collection bot: roster grid, Omni crafts, market, sets, and Conjure Finder — without switching to Telegram.
 
