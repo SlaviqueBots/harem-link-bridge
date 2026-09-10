@@ -48,13 +48,21 @@ def ask_text(
     max_chars: int = 500,
     geometry: str = "",
     on_geometry: Callable[[str], None] | None = None,
+    allow_empty: bool = False,
 ) -> str | None:
     """Modal multiline editor. Returns stripped text, or None if cancelled."""
+    from link_bridge.theme import bind_text_clipboard, dialog_palette, style_tk_text
+
     result: dict[str, str | None] = {"value": None}
+    pal = dialog_palette(parent)
+    bg = pal["bg"]
+    fg = pal["fg"]
+    muted = pal["muted"]
 
     win = tk.Toplevel(parent)
     win.title(title)
     win.transient(parent.winfo_toplevel())
+    win.configure(bg=bg)
     win.grab_set()
     win.resizable(True, True)
     win.minsize(360, 180)
@@ -69,11 +77,15 @@ def ask_text(
     frame = ttk.Frame(win, padding=10)
     frame.pack(fill=tk.BOTH, expand=True)
     if prompt:
-        ttk.Label(frame, text=prompt, wraplength=420).pack(anchor=tk.W, pady=(0, 6))
+        ttk.Label(frame, text=prompt, wraplength=420, foreground=muted).pack(
+            anchor=tk.W, pady=(0, 6)
+        )
 
-    text = tk.Text(frame, height=6, width=52, wrap=tk.WORD, undo=True)
+    text = tk.Text(frame, height=6, width=52, wrap=tk.WORD, undo=True, font=("Segoe UI", 10))
+    style_tk_text(text, pal)
     text.pack(fill=tk.BOTH, expand=True)
     text.insert("1.0", initial or "")
+    bind_text_clipboard(text)
     text.focus_set()
 
     count = tk.StringVar()
@@ -106,14 +118,15 @@ def ask_text(
 
     def _save() -> None:
         body = text.get("1.0", "end-1c").strip()[: max(1, int(max_chars))]
-        if not body:
+        if not body and not allow_empty:
             return
         _remember_geometry()
         result["value"] = body
         win.destroy()
 
     ttk.Button(btns, text="Cancel", command=_cancel).pack(side=tk.RIGHT)
-    ttk.Button(btns, text="Save", command=_save).pack(side=tk.RIGHT, padx=(0, 8))
+    save_label = "Save" if not allow_empty else "Save / clear"
+    ttk.Button(btns, text=save_label, command=_save).pack(side=tk.RIGHT, padx=(0, 8))
     win.bind("<Escape>", lambda _e: _cancel())
     win.protocol("WM_DELETE_WINDOW", _cancel)
 
@@ -132,12 +145,18 @@ def ask_name(
     on_geometry: Callable[[str], None] | None = None,
 ) -> str | None:
     """Modal single-line name prompt. Returns stripped text, or None if cancelled."""
+    from link_bridge.theme import bind_entry_clipboard, dialog_palette
+
     result: dict[str, str | None] = {"value": None}
     limit = max(1, int(max_chars))
+    pal = dialog_palette(parent)
+    bg = pal["bg"]
+    muted = pal["muted"]
 
     win = tk.Toplevel(parent)
     win.title(title)
     win.transient(parent.winfo_toplevel())
+    win.configure(bg=bg)
     win.grab_set()
     win.resizable(True, False)
     win.minsize(360, 120)
@@ -152,17 +171,14 @@ def ask_name(
     frame = ttk.Frame(win, padding=10)
     frame.pack(fill=tk.BOTH, expand=True)
     if prompt:
-        ttk.Label(frame, text=prompt, wraplength=420).pack(anchor=tk.W, pady=(0, 6))
+        ttk.Label(frame, text=prompt, wraplength=420, foreground=muted).pack(
+            anchor=tk.W, pady=(0, 6)
+        )
 
     var = tk.StringVar(value=(initial or "")[:limit])
     entry = ttk.Entry(frame, textvariable=var)
     entry.pack(fill=tk.X)
-    try:
-        from link_bridge.theme import bind_entry_clipboard
-
-        bind_entry_clipboard(entry)
-    except Exception:
-        pass
+    bind_entry_clipboard(entry)
     entry.focus_set()
     try:
         entry.icursor(tk.END)

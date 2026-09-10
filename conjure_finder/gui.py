@@ -71,8 +71,8 @@ class ConjureFinderApp(ttk.Frame):
         self._last_bulk: BulkResult | None = None
         self._findings: list[FindingRecord] = load_findings()
         self._finding_photos: list[Any] = []
-        self._pending_incoming_url: str | None = None
-        self._pending_from_browser = False
+        self._pending_incoming_urls: list[tuple[str, bool]] = []
+        self._processing_pending = False
         self._browser_active = False
         self._browser_source_url = ""
         self._browser_output = ""
@@ -681,14 +681,20 @@ class ConjureFinderApp(ttk.Frame):
         bind_q_close(win)
 
     def process_incoming_url(self, url: str, *, from_browser: bool = False) -> None:
-        """Queue a single-post search (browser hook / Bridge)."""
+        """Queue a single-post search (browser hook / Bridge).
+
+        If a search is already running, append to the queue and process
+        sequentially once the current search completes.
+        """
         text = (url or "").strip()
         if not text:
             return
         if self._worker and self._worker.is_alive():
-            self._pending_incoming_url = text
-            self._pending_from_browser = bool(from_browser)
-            self.status_var.set("Browser URL queued — waiting for current search…")
+            self._pending_incoming_urls.append((text, bool(from_browser)))
+            self.status_var.set(
+                f"Browser URL queued ({len(self._pending_incoming_urls)} pending) "
+                "— waiting for current search…"
+            )
             return
         self._browser_active = bool(from_browser)
         self._browser_source_url = text if from_browser else ""
@@ -700,18 +706,24 @@ class ConjureFinderApp(ttk.Frame):
         self.start_search()
 
     def _maybe_run_pending_incoming(self) -> None:
-        pending = (self._pending_incoming_url or "").strip()
-        if not pending:
+        if self._processing_pending or not self._pending_incoming_urls:
             return
-        from_browser = bool(self._pending_from_browser)
-        self._pending_incoming_url = None
-        self._pending_from_browser = False
+        pending, from_browser = self._pending_incoming_urls.pop(0)
+        self._processing_pending = True
+        self._pending_from_browser = from_browser
+        remaining = len(self._pending_incoming_urls)
+        if remaining > 0:
+            self.status_var.set(
+                f"Running queued URL… ({remaining} more after this)"
+            )
         self.after(
             120,
-            lambda u=pending, fb=from_browser: self.process_incoming_url(
-                u, from_browser=fb
-            ),
+            lambda u=pending, fb=from_browser: self._run_queued_incoming(u, fb),
         )
+
+    def _run_queued_incoming(self, url: str, from_browser: bool) -> None:
+        self._processing_pending = False
+        self.process_incoming_url(url, from_browser=from_browser)
 
     def start_search(self) -> None:
         if self._worker and self._worker.is_alive():

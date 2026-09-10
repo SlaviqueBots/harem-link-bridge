@@ -12,6 +12,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from urllib.parse import urlparse
 
 COLS = 6
 ROWS = 4  # square-mode viewport sizing only
@@ -29,6 +30,11 @@ _MAX_CACHE_BYTES = 256 * 1024 * 1024  # 256 MiB
 _FETCH_WORKERS = 16
 
 logger = logging.getLogger(__name__)
+
+
+def enable_default_disk_cache() -> None:
+    """In-memory preview cache is always on; disk cache is optional."""
+    return
 
 _fetch_pool = ThreadPoolExecutor(
     max_workers=_FETCH_WORKERS, thread_name_prefix="hlb-thumb"
@@ -59,7 +65,18 @@ def cache_get(url: str) -> bytes | None:
     with _cache_lock:
         data = _byte_cache.get(key)
         if data is None:
-            return None
+            try:
+                from link_bridge import image_cache
+
+                data = image_cache.get(key)
+            except Exception:
+                data = None
+            if data is None:
+                return None
+            _byte_cache[key] = data
+            global _cache_bytes
+            _cache_bytes += len(data)
+            return data
         _byte_cache.move_to_end(key)
         return data
 
@@ -80,6 +97,13 @@ def cache_put(url: str, data: bytes) -> None:
         ):
             _, evicted = _byte_cache.popitem(last=False)
             _cache_bytes -= len(evicted)
+    # Permanent on-device copy (opt-in toggle; no-op when off).
+    try:
+        from link_bridge import image_cache
+
+        image_cache.put(key, data)
+    except Exception:
+        pass
 
 
 def cache_clear() -> None:
@@ -199,30 +223,67 @@ def decode_thumb_sized(data: bytes, width: int, height: int) -> Any:
     return ImageTk.PhotoImage(im)
 
 
+def _request_headers(url: str) -> dict[str, str]:
+    headers = {"User-Agent": USER_AGENT, "Accept": "image/*,*/*"}
+    host = (urlparse(url).hostname or "").lower()
+    if host.endswith("rule34.xxx"):
+        headers["Referer"] = "https://rule34.xxx/"
+    return headers
+
+
+def alt_r34_cdn_url(url: str) -> str:
+    """Same path on api-cdn when wimg/img is 403 on the user's network."""
+    raw = (url or "").strip()
+    host = (urlparse(raw).hostname or "").lower()
+    if host in ("wimg.rule34.xxx", "img.rule34.xxx"):
+        return raw.replace(host, "api-cdn.rule34.xxx", 1)
+    return ""
+
+
 def fetch_url_bytes(
     url: str, *, timeout: float = 18.0, retries: int = 3
 ) -> bytes:
-    """Download preview bytes; retry transient network / HTTP errors."""
+    """Download preview bytes; retry transient network / HTTP errors.
+
+    C5: blocks + sleeps between retries - NEVER call on the Tk UI thread,
+    only via schedule_thumb_fetch / worker threads.
+    """
     key = (url or "").strip()
     if not key:
         raise ValueError("empty url")
     last: BaseException | None = None
     attempts = max(1, int(retries))
-    for i in range(attempts):
-        try:
-            req = urllib.request.Request(key, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = resp.read()
-            if not data:
-                raise ValueError("empty body")
-            return data
-        except Exception as exc:
-            last = exc
-            # Don't hammer permanently-missing URLs.
-            if isinstance(exc, urllib.error.HTTPError) and exc.code in (404, 410):
-                break
-            if i + 1 < attempts:
-                time.sleep(0.35 * (i + 1))
+    candidates = [key]
+    alt = alt_r34_cdn_url(key)
+    if alt and alt not in candidates:
+        candidates.append(alt)
+    for target in candidates:
+        last = None
+        for i in range(attempts):
+            try:
+                req = urllib.request.Request(target, headers=_request_headers(target))
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    data = resp.read()
+                if not data:
+                    raise ValueError("empty body")
+                if "text/html" in ctype:
+                    raise ValueError("html body")
+                return data
+            except Exception as exc:
+                last = exc
+                if isinstance(exc, urllib.error.HTTPError) and exc.code in (404, 410):
+                    break
+                if i + 1 < attempts:
+                    time.sleep(0.35 * (i + 1))
+        if isinstance(last, urllib.error.HTTPError) and last.code == 403:
+            # B15: falling over to the alt CDN host - log it so a persistent
+            # block reads as "blocked host", not "slow load".
+            logger.info("thumb 403 on %s, trying alt CDN host", target)
+            continue
+        if alt and target == key:
+            continue
+        break
     assert last is not None
     raise last
 

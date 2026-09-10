@@ -19,6 +19,15 @@ repo_root = os.path.dirname(spec_dir)
 _ffmpeg_datas = collect_data_files("imageio_ffmpeg")
 # CA roots for https / Danbooru / Rule34 (avoids bare [Errno 2] on HTTPS).
 _certifi_datas = collect_data_files("certifi")
+# Trampoline modules exec sibling *.exe.pyc (1.4.19 bytecode still in use).
+_exe_pyc_datas = []
+for _pkg in ("link_bridge", "conjure_finder"):
+    _pkg_dir = os.path.join(repo_root, _pkg)
+    if not os.path.isdir(_pkg_dir):
+        continue
+    for _name in os.listdir(_pkg_dir):
+        if _name.endswith(".exe.pyc"):
+            _exe_pyc_datas.append((os.path.join(_pkg_dir, _name), _pkg))
 
 _hidden = [
     "link_bridge",
@@ -86,13 +95,14 @@ _hidden = [
     "bot.utils.currency",
     "bot.utils.post_tags",
 ]
+_hidden += collect_submodules("link_bridge")
 _hidden += collect_submodules("conjure_finder")
 
 a = Analysis(
     [os.path.join(spec_dir, "__main__.py")],
     pathex=[repo_root],
     binaries=[],
-    datas=_ffmpeg_datas + _certifi_datas,
+    datas=_ffmpeg_datas + _certifi_datas + _exe_pyc_datas,
     hiddenimports=_hidden,
     hookspath=[],
     hooksconfig={},

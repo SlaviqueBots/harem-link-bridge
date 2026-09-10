@@ -1,4 +1,4 @@
-"""Sets browser ??? list set names + fill-viewport card grid."""
+"""Sets browser — list set names + fill-viewport card grid."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 import tkinter as tk
 from tkinter import ttk
 
+from link_bridge.market_links import to_int
 from link_bridge.thumb_grid import (
     COLS,
     PAGE_SIZE,
@@ -32,6 +33,8 @@ PostGridFn = Callable[[int, OkCb, ErrCb], None]
 OpenOmniFn = Callable[[int, OkCb, ErrCb], None]
 RegisterCupFn = Callable[[int, OkCb, ErrCb], None]
 DmCraftFn = Callable[[int, str, OkCb, ErrCb], None]
+MarketSellFn = Callable[[int, int, OkCb, ErrCb], None]
+MarketGiftFn = Callable[[int, str, OkCb, ErrCb], None]
 RenameSetFn = Callable[[str, str, OkCb, ErrCb], None]
 DeleteSetFn = Callable[[str, OkCb, ErrCb], None]
 AvoidSetFn = Callable[[str, bool, OkCb, ErrCb], None]
@@ -58,6 +61,8 @@ class SetsPanel(ttk.Frame):
         open_omni_ui: Callable[[int], None] | None = None,
         register_cup: RegisterCupFn | None = None,
         dm_craft: DmCraftFn | None = None,
+        market_sell: MarketSellFn | None = None,
+        market_gift: MarketGiftFn | None = None,
         rename_set: RenameSetFn | None = None,
         delete_set: DeleteSetFn | None = None,
         avoid_set: AvoidSetFn | None = None,
@@ -83,6 +88,8 @@ class SetsPanel(ttk.Frame):
         self._open_omni_ui = open_omni_ui
         self._register_cup = register_cup
         self._dm_craft = dm_craft
+        self._market_sell = market_sell
+        self._market_gift = market_gift
         self._rename_set = rename_set
         self._delete_set = delete_set
         self._avoid_set = avoid_set
@@ -168,9 +175,9 @@ class SetsPanel(ttk.Frame):
 
         bar = ttk.Frame(right)
         bar.pack(fill=tk.X)
-        self.prev_btn = ttk.Button(bar, text="??? Prev", command=self.prev_page)
+        self.prev_btn = ttk.Button(bar, text="◀ Prev", command=self.prev_page)
         self.prev_btn.pack(side=tk.LEFT)
-        self.next_btn = ttk.Button(bar, text="Next ???", command=self.next_page)
+        self.next_btn = ttk.Button(bar, text="Next ▶", command=self.next_page)
         self.next_btn.pack(side=tk.LEFT, padx=(6, 0))
         self._target_btn = ttk.Button(
             bar, text=self._target_label(), command=self._toggle_target
@@ -235,11 +242,15 @@ class SetsPanel(ttk.Frame):
             except Exception:
                 pass
 
+    def has_cached_view(self) -> bool:
+        """True when a rendered set grid is alive — tab switches must not rebuild it."""
+        return bool(self._items)
+
     def refresh_sets(self) -> None:
         self._disarm_delete()
         self._whose = self._normalize_whose(self._whose)
         whose_bit = f" @{self._whose}" if self._whose else ""
-        self.meta_var.set(f"Loading sets{whose_bit}???")
+        self.meta_var.set(f"Loading sets{whose_bit}…")
 
         def on_ok(body: dict) -> None:
             if body.get("op") != "sets_list_ok":
@@ -310,7 +321,7 @@ class SetsPanel(ttk.Frame):
 
     def _set_list_label(self, name: str) -> str:
         if name.casefold() in self._avoided:
-            return f"???? {name}"
+            return f"🚫 {name}"
         return name
 
     def _refresh_set_list_labels(self) -> None:
@@ -327,7 +338,7 @@ class SetsPanel(ttk.Frame):
             return
         self._busy = True
         want = "yes" if avoided else "no"
-        self.meta_var.set(f"Avoided ???{name}???: {want}???")
+        self.meta_var.set(f"Avoided “{name}”: {want}…")
 
         def on_ok(body: dict) -> None:
             self._busy = False
@@ -348,8 +359,8 @@ class SetsPanel(ttk.Frame):
                 self._avoided.discard(stored.casefold())
             self._refresh_set_list_labels()
             flag = "yes" if body.get("avoided") else "no"
-            self.meta_var.set(f"Avoided ???{stored}???: {flag}")
-            self._on_log(f"Avoided ???{stored}???: {flag}")
+            self.meta_var.set(f"Avoided “{stored}”: {flag}")
+            self._on_log(f"Avoided “{stored}”: {flag}")
 
         def on_err(exc: BaseException) -> None:
             self._busy = False
@@ -370,23 +381,50 @@ class SetsPanel(ttk.Frame):
         except Exception:
             pass
 
-    def _arm_delete(self) -> None:
+    @staticmethod
+    def _resolve_set_target(
+        explicit: str | None,
+        curselection: tuple | list,
+        selected: str,
+        names: list[str],
+    ) -> str:
+        """Which set a rename/present/delete action applies to.
+
+        Priority: explicit name (e.g. the right-clicked row) first, then the
+        listbox selection, then the open set. The open set is stale whenever
+        the selection event has not caught up yet - it must never win over
+        an explicit or selected row.
+        """
+        cand = ((explicit or "").strip())
+        if cand:
+            return cand
+        idx = -1
+        try:
+            if curselection:
+                idx = int(curselection[0])
+        except (TypeError, ValueError):
+            idx = -1
+        if 0 <= idx < len(names):
+            return names[idx]
+        if (selected or "").strip() and selected in names:
+            return selected
+        return ""
+
+    def _arm_delete(self, name: str | None = None) -> None:
         if not self._can_delete_sets() or self._busy:
             return
-        name = (self._selected or "").strip()
-        if not name and self._list.curselection():
-            idx = int(self._list.curselection()[0])
-            if 0 <= idx < len(self._names):
-                name = self._names[idx]
+        name = self._resolve_set_target(
+            name, self._list.curselection(), self._selected, self._names
+        )
         if not name:
             self.meta_var.set("Pick a set to delete.")
             return
         self._pending_delete = name
         self._delete_hint.set(
-            f"Delete ???{name}???? Cards stay; only the set is removed."
+            f"Delete “{name}”? Cards stay; only the set is removed."
         )
         try:
-            self._delete_confirm_btn.configure(text=f"Confirm delete ???{name}???")
+            self._delete_confirm_btn.configure(text=f"Confirm delete “{name}”")
         except Exception:
             pass
         try:
@@ -411,7 +449,7 @@ class SetsPanel(ttk.Frame):
             self._disarm_delete()
             return
         self._busy = True
-        self.meta_var.set(f"Deleting set ???{name}??????")
+        self.meta_var.set(f"Deleting set “{name}”…")
 
         def on_ok(body: dict) -> None:
             self._busy = False
@@ -426,8 +464,8 @@ class SetsPanel(ttk.Frame):
                 self._refresh_set_list_labels()
                 if self._on_set_names is not None:
                     self._on_set_names(list(self._names))
-                self.meta_var.set(f"Deleted ???{gone}??? ?? {count} cards kept")
-                self._on_log(f"Deleted set ???{gone}??? ({count} cards kept)")
+                self.meta_var.set(f"Deleted “{gone}” · {count} cards kept")
+                self._on_log(f"Deleted set “{gone}” ({count} cards kept)")
                 if gone.casefold() == (self._selected or "").casefold():
                     self._selected = ""
                 if self._names:
@@ -460,23 +498,35 @@ class SetsPanel(ttk.Frame):
         self._list.selection_clear(0, tk.END)
         self._list.selection_set(idx)
         self._list.activate(idx)
-        menu = tk.Menu(self._list, tearoff=0)
+        from link_bridge.theme import new_themed_menu
+
+        menu = new_themed_menu(self._list)
+        clicked = self._names[idx]
         if self._present_set is not None and not self._whose:
-            menu.add_command(label="Post set???", command=self._present_selected)
+            menu.add_command(
+                label="Post set…",
+                command=lambda n=clicked: self._present_selected(n),
+            )
         if self._can_rename_sets():
-            menu.add_command(label="Rename???", command=self._rename_selected)
+            menu.add_command(
+                label="Rename…",
+                command=lambda n=clicked: self._rename_selected(n),
+            )
         if self._can_delete_sets():
-            menu.add_command(label="Delete set???", command=self._arm_delete)
+            menu.add_command(
+                label="Delete set…",
+                command=lambda n=clicked: self._arm_delete(n),
+            )
         if self._can_avoid_sets():
-            avoid_m = tk.Menu(menu, tearoff=0)
+            avoid_m = new_themed_menu(self._list, parent_menu=menu)
             name = self._names[idx]
             is_avoided = name.casefold() in self._avoided
             avoid_m.add_command(
-                label="Yes" + (" ???" if is_avoided else ""),
+                label="Yes" + (" ✓" if is_avoided else ""),
                 command=lambda n=name: self._set_avoided(n, True),
             )
             avoid_m.add_command(
-                label="No" + (" ???" if not is_avoided else ""),
+                label="No" + (" ✓" if not is_avoided else ""),
                 command=lambda n=name: self._set_avoided(n, False),
             )
             menu.add_cascade(label="Avoided", menu=avoid_m)
@@ -490,30 +540,25 @@ class SetsPanel(ttk.Frame):
             except Exception:
                 pass
 
-    def _present_selected(self) -> None:
+    def _present_selected(self, name: str | None = None) -> None:
         if self._present_set is None or self._busy or self._whose:
             return
-        sel = self._list.curselection()
-        if sel:
-            idx = int(sel[0])
-        elif self._selected in self._names:
-            idx = self._names.index(self._selected)
-        else:
+        name = self._resolve_set_target(
+            name, self._list.curselection(), self._selected, self._names
+        )
+        if not name:
             return
-        if idx < 0 or idx >= len(self._names):
-            return
-        name = self._names[idx]
         self._busy = True
         dest = "DM" if (self._get_post_target() or "group") == "dm" else "Group"
-        self.meta_var.set(f"Posting set ???{name}??? ??? {dest}???")
+        self.meta_var.set(f"Posting set “{name}” → {dest}…")
 
         def on_ok(body: dict) -> None:
             self._busy = False
             if body.get("op") == "sets_present_ok":
                 ok = int(body.get("ok") or 0)
                 fail = int(body.get("fail") or 0)
-                self.meta_var.set(f"Posted ???{name}??? ?? {ok} ok ?? {fail} fail ??? {dest}")
-                self._on_log(f"Post set ???{name}??? ??? {dest} ({ok}/{fail})")
+                self.meta_var.set(f"Posted “{name}” · {ok} ok · {fail} fail → {dest}")
+                self._on_log(f"Post set “{name}” → {dest} ({ok}/{fail})")
                 if self._should_focus():
                     from link_bridge.focus_telegram import focus_telegram
 
@@ -529,24 +574,19 @@ class SetsPanel(ttk.Frame):
 
         self._present_set(name, on_ok, on_err)
 
-    def _rename_selected(self) -> None:
+    def _rename_selected(self, name: str | None = None) -> None:
         if not self._can_rename_sets():
             return
-        sel = self._list.curselection()
-        if sel:
-            idx = int(sel[0])
-        elif self._selected in self._names:
-            idx = self._names.index(self._selected)
-        else:
+        old = self._resolve_set_target(
+            name, self._list.curselection(), self._selected, self._names
+        )
+        if not old:
             return
-        if idx < 0 or idx >= len(self._names):
-            return
-        old = self._names[idx]
         from link_bridge.text_edit_dialog import ask_set_name
 
         new = ask_set_name(
             self,
-            title=f"Rename set ???{old}???",
+            title=f"Rename set “{old}”",
             initial=old,
             geometry=self._get_text_geo(),
             on_geometry=self._set_text_geo,
@@ -554,7 +594,7 @@ class SetsPanel(ttk.Frame):
         if new is None or new.strip() == old:
             return
         self._busy = True
-        self.meta_var.set(f"Renaming ???{old}??????")
+        self.meta_var.set(f"Renaming “{old}”…")
 
         def on_ok(body: dict) -> None:
             self._busy = False
@@ -576,8 +616,8 @@ class SetsPanel(ttk.Frame):
                     self._list.see(i)
                 if self._on_set_names is not None:
                     self._on_set_names(list(self._names))
-                self.meta_var.set(f"Renamed to ???{renamed}??? ?? {count} cards")
-                self._on_log(f"Renamed set ???{old}??? ??? ???{renamed}??? ({count})")
+                self.meta_var.set(f"Renamed to “{renamed}” · {count} cards")
+                self._on_log(f"Renamed set “{old}” → “{renamed}” ({count})")
                 self._open_set(renamed)
             else:
                 self.meta_var.set(
@@ -731,7 +771,7 @@ class SetsPanel(ttk.Frame):
         self._gen += 1
         gen = self._gen
         set_name = self._selected
-        self.meta_var.set(f"Loading ???{set_name}??? page {page + 1}???")
+        self.meta_var.set(f"Loading “{set_name}” page {page + 1}…")
         self._set_nav(False)
 
         def on_ok(body: dict) -> None:
@@ -747,10 +787,13 @@ class SetsPanel(ttk.Frame):
             self._page_size = int(body.get("page_size") or PAGE_SIZE)
             self._total = int(body.get("total") or 0)
             self._items = list(body.get("items") or [])
+            if not self._whose:
+                # Listed cards live in the Market, not the working roster.
+                self._items = [it for it in self._items if not it.get("listed")]
             pages = max(1, (self._total + self._page_size - 1) // self._page_size)
-            whose_bit = f"@{self._whose} ?? " if self._whose else ""
+            whose_bit = f"@{self._whose} · " if self._whose else ""
             self.meta_var.set(
-                f"{whose_bit}???{set_name}??? ?? page {self._page + 1}/{pages} ?? {self._total} cards"
+                f"{whose_bit}“{set_name}” · page {self._page + 1}/{pages} · {self._total} cards"
             )
             self._thumb = compute_thumb(
                 max(1, self.grid_fr.winfo_width()),
@@ -803,11 +846,11 @@ class SetsPanel(ttk.Frame):
             box = tk.Frame(cell, width=thumb, height=thumb)
             box.pack_propagate(False)
             box.pack(expand=True)
-            thumb_lbl = tk.Label(box, text="???", relief=tk.GROOVE, cursor="hand2")
+            thumb_lbl = tk.Label(box, text="…", relief=tk.GROOVE, cursor="hand2")
             thumb_lbl.pack(fill=tk.BOTH, expand=True)
             name = (item.get("name") or f"#{item.get('id')}")[:22]
             ttk.Label(cell, text=name, wraplength=max(60, thumb)).pack()
-            cid = int(item.get("id") or 0)
+            cid = to_int(item.get("id"))
             post_url = (item.get("post_url") or "").strip()
             self._bind_thumb(thumb_lbl, cid, post_url)
             url = (item.get("preview_url") or "").strip()
@@ -923,7 +966,7 @@ class SetsPanel(ttk.Frame):
         if not url:
             self.meta_var.set(f"No image URL for #{char_id}")
             return
-        self.meta_var.set(f"Opening image #{char_id}???")
+        self.meta_var.set(f"Opening image #{char_id}…")
 
         def on_err(exc: BaseException) -> None:
             self.after(
@@ -939,7 +982,7 @@ class SetsPanel(ttk.Frame):
         item = self._item_by_id(char_id) or {}
         name = str(item.get("name") or "").strip()
         if name:
-            self.meta_var.set(f"#{char_id} ?? {name}")
+            self.meta_var.set(f"#{char_id} · {name}")
         else:
             self.meta_var.set(f"#{char_id}")
         popup_thumb_menu(
@@ -952,6 +995,12 @@ class SetsPanel(ttk.Frame):
             on_register_cup=self._click_register_cup
             if self._register_cup is not None
             else None,
+            on_market_sell=self._click_market_sell
+            if self._market_sell is not None
+            else None,
+            on_market_gift=self._click_market_gift
+            if self._market_gift is not None
+            else None,
             on_show_checkpoint=self._show_checkpoint_image,
             on_edit_flavour=self._edit_flavour,
             on_edit_note=self._edit_note,
@@ -960,6 +1009,9 @@ class SetsPanel(ttk.Frame):
             has_checkpoint=bool(item.get("has_checkpoint")),
             checkpoint_image_url=str(item.get("checkpoint_image_url") or ""),
             char_name=name,
+            character_tag=str(item.get("character_tag") or item.get("canonical_tag") or ""),
+            copyright_tag=str(item.get("copyright_tag") or ""),
+            artist_tag=str(item.get("artist_tag") or ""),
             set_names=self._menu_set_names(),
             current_set=str(item.get("set") or self._selected or ""),
             on_add_to_set=self._add_to_set,
@@ -986,7 +1038,7 @@ class SetsPanel(ttk.Frame):
             self,
             title=f"Flavour #{char_id}",
             initial=str(item.get("flavour") or ""),
-            prompt="Public flavour text (saved quietly ??? no Telegram post).",
+            prompt="Public flavour text (saved quietly — no Telegram post).",
             geometry=self._get_text_geo(),
             on_geometry=self._set_text_geo,
         )
@@ -1002,7 +1054,7 @@ class SetsPanel(ttk.Frame):
             self,
             title=f"Note #{char_id}",
             initial=str(item.get("note") or ""),
-            prompt="Owner-only note (saved quietly ??? no Telegram post).",
+            prompt="Owner-only note (saved quietly — no Telegram post).",
             geometry=self._get_text_geo(),
             on_geometry=self._set_text_geo,
         )
@@ -1017,7 +1069,7 @@ class SetsPanel(ttk.Frame):
         if not target:
             self.meta_var.set("No checkpoint image")
             return
-        self.meta_var.set("Opening checkpoint???")
+        self.meta_var.set("Opening checkpoint…")
 
         def on_err(exc: BaseException) -> None:
             self.after(
@@ -1042,18 +1094,18 @@ class SetsPanel(ttk.Frame):
             if action_id == "omni" and self._open_omni is not None:
                 self._click_omni(char_id)
             else:
-                self.meta_var.set(f"Craft ???{action_id}??? needs a connected update")
+                self.meta_var.set(f"Craft “{action_id}” needs a connected update")
             return
         self._busy = True
         label = action_id if action_id != "omni" else "Omnicraft"
-        self.meta_var.set(f"DM craft #{char_id}: {label}???")
+        self.meta_var.set(f"DM craft #{char_id}: {label}…")
 
         def on_ok(body: dict) -> None:
             self._busy = False
             if body.get("op") == "dm_craft_ok":
                 detail = str(body.get("detail") or "ok").strip()
                 silent = bool(body.get("silent"))
-                notice = detail if detail and detail != "ok" else f"{label} ???"
+                notice = detail if detail and detail != "ok" else f"{label} ✓"
                 self.meta_var.set(f"#{char_id}: {notice}")
                 self._on_log(f"Craft {action_id} char {char_id}: {notice}")
                 if open_omni_after_mirror and self._open_omni_ui is not None:
@@ -1092,16 +1144,20 @@ class SetsPanel(ttk.Frame):
         self._dm_craft(int(char_id), str(action_id), on_ok, on_err)
 
     def _click_register_cup(self, char_id: int) -> None:
-        if char_id <= 0 or self._busy or self._register_cup is None:
+        if char_id <= 0 or self._register_cup is None:
+            return
+        if self._busy:
+            # A19: a tap during a craft looked broken, not busy.
+            self.meta_var.set("Busy - try again in a moment…")
             return
         self._busy = True
-        self.meta_var.set(f"Registering #{char_id} for daily cup???")
+        self.meta_var.set(f"Registering #{char_id} for daily cup…")
 
         def on_ok(body: dict) -> None:
             self._busy = False
             if body.get("op") == "register_cup_ok":
                 theme = (body.get("theme") or "").strip()
-                bit = f" ?? {theme}" if theme else ""
+                bit = f" · {theme}" if theme else ""
                 self.meta_var.set(f"Daily cup: #{char_id} registered{bit}")
                 self._on_log(f"Daily cup registered char {char_id}{bit}")
                 if self._should_focus():
@@ -1124,20 +1180,76 @@ class SetsPanel(ttk.Frame):
 
         self._register_cup(int(char_id), on_ok, on_err)
 
+    def _click_market_sell(self, char_id: int, price: int) -> None:
+        # B1: desktop sell (same path as Telegram sell).
+        if char_id <= 0 or price <= 0 or self._busy or self._market_sell is None:
+            return
+        self._busy = True
+        self.meta_var.set(f"Listing #{char_id} for {price}…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "market_sell_ok":
+                lid = body.get("listing_id") or "?"
+                self.meta_var.set(f"#{char_id} listed for {price} (lot #{lid})")
+                self._on_log(f"Market sell ok char={char_id} price={price} lot={lid}")
+                self.load_page(self._page)
+            else:
+                err = body.get("error") or "failed"
+                self.meta_var.set(f"Sell failed: {err}")
+                self._on_log(f"Market sell err: {err}")
+            self._set_nav(True)
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Sell failed: {exc}")
+            self._on_log(f"Market sell failed: {exc}")
+            self._set_nav(True)
+
+        self._market_sell(int(char_id), int(price), on_ok, on_err)
+
+    def _click_market_gift(self, char_id: int, target: str) -> None:
+        # B1: desktop gift (same path as Telegram gift).
+        if char_id <= 0 or not (target or "").strip() or self._busy or self._market_gift is None:
+            return
+        target = target.strip()
+        self._busy = True
+        self.meta_var.set(f"Gifting #{char_id} to {target}…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "market_gift_ok":
+                self.meta_var.set(f"#{char_id} gifted to {target}")
+                self._on_log(f"Market gift ok char={char_id} to={target}")
+                self.load_page(self._page)
+            else:
+                err = body.get("error") or "failed"
+                self.meta_var.set(f"Gift failed: {err}")
+                self._on_log(f"Market gift err: {err}")
+            self._set_nav(True)
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Gift failed: {exc}")
+            self._on_log(f"Market gift failed: {exc}")
+            self._set_nav(True)
+
+        self._market_gift(int(char_id), target, on_ok, on_err)
+
     def _click_post(self, char_id: int) -> None:
         if char_id <= 0 or self._busy:
             return
         target = (self._get_post_target() or "group").strip().lower()
         dest = "DM" if target == "dm" else "group"
         self._busy = True
-        self.meta_var.set(f"Posting #{char_id} ??? {dest}???")
+        self.meta_var.set(f"Posting #{char_id} → {dest}…")
 
         def on_ok(body: dict) -> None:
             self._busy = False
             if body.get("op") == "post_grid_ok":
                 kind = "tamed" if body.get("tamed") else "card"
-                self.meta_var.set(f"Posted {kind} #{char_id} ??? {dest}")
-                self._on_log(f"Post {kind} char {char_id} ??? {dest}")
+                self.meta_var.set(f"Posted {kind} #{char_id} → {dest}")
+                self._on_log(f"Post {kind} char {char_id} → {dest}")
                 if self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram
@@ -1166,12 +1278,12 @@ class SetsPanel(ttk.Frame):
         if char_id <= 0 or self._busy or self._open_omni is None:
             return
         self._busy = True
-        self.meta_var.set(f"Opening #{char_id} in Telegram DM???")
+        self.meta_var.set(f"Opening #{char_id} in Telegram DM…")
 
         def on_ok(body: dict) -> None:
             self._busy = False
             if body.get("op") == "open_omni_ok":
-                self.meta_var.set(f"Sent #{char_id} ??? Telegram DM")
+                self.meta_var.set(f"Sent #{char_id} → Telegram DM")
                 self._on_log(f"Omnicraft sent for char {char_id}")
                 if self._should_focus():
                     try:

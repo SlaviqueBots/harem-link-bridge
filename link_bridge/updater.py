@@ -1,12 +1,11 @@
 """Client-side version check + self-update for the frozen .exe.
 
 Flow:
-  1. GET ``http://{host}:{update_port}/version.json``
-  2. If remote version > local, download beside the exe as ``*.exe.new``
+  1. GET ``https://github.com/SlaviqueBots/harem-link-bridge/releases/latest/download/version.json``
+     (override with ``update_url`` in config)
+  2. If remote version > local, download from the GitHub ``url`` in the manifest
   3. Write ``_update_bridge.ps1`` that waits for this process to exit, swaps the
-     exe (rename old aside, copy new in), then opens the folder so the user can
-     start the new build themselves — no auto-relaunch (that path was unreliable
-     on Windows / PyInstaller)
+     exe, then relaunches it (same as 1.4.0)
   4. Launch PowerShell via ``cmd start`` (fully detached) and quit
 """
 
@@ -20,17 +19,37 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from link_bridge import __version__
-from link_bridge.config import BridgeConfig, app_dir
+ProgressCb = Callable[[int, int], None] | None
+StatusCb = Callable[[str], None] | None
+
+from link_bridge import UPDATE_MANIFEST_URL, __version__
+from link_bridge.config import BridgeConfig, app_dir, exe_dir
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_UPDATE_PORT = 8766
 EXE_NAME = "HaremLinkBridge.exe"
 MANIFEST_NAME = "version.json"
+USERSCRIPT_NAME = "harem_bridge_send.user.js"
+
+
+def userscript_path() -> Path:
+    """Path of the browser userscript next to the exe (or package)."""
+    dest = app_dir() / USERSCRIPT_NAME
+    bundled = Path(__file__).resolve().parent / "userscript" / USERSCRIPT_NAME
+    if bundled.is_file() and (not dest.is_file() or dest.stat().st_mtime < bundled.stat().st_mtime):
+        try:
+            dest.write_bytes(bundled.read_bytes())
+        except OSError:
+            if bundled.is_file():
+                return bundled
+    return dest if dest.is_file() else bundled
+
+
 UPDATE_BAT = "_update_bridge.bat"
 UPDATE_PS1 = "_update_bridge.ps1"
 CREATE_NO_WINDOW = 0x08000000
@@ -67,9 +86,7 @@ def manifest_url(cfg: BridgeConfig) -> str:
     custom = (getattr(cfg, "update_url", None) or "").strip()
     if custom:
         return custom
-    host = (cfg.host or "").strip() or "108.165.174.158"
-    port = int(getattr(cfg, "update_port", 0) or DEFAULT_UPDATE_PORT)
-    return f"http://{host}:{port}/{MANIFEST_NAME}"
+    return UPDATE_MANIFEST_URL
 
 
 def fetch_manifest(cfg: BridgeConfig, *, timeout: float = 8.0) -> UpdateInfo | None:
@@ -113,20 +130,43 @@ def _exe_path() -> Path:
     return app_dir() / EXE_NAME
 
 
-def download_update(info: UpdateInfo, dest: Path, *, timeout: float = 120.0) -> Path:
+def download_update(
+    info: UpdateInfo,
+    dest: Path,
+    *,
+    timeout: float = 600.0,
+    on_progress: ProgressCb = None,
+    on_status: StatusCb = None,
+) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     if tmp.exists():
         tmp.unlink()
+    if on_status:
+        on_status("Connecting…")
     req = urllib.request.Request(info.url, headers={"User-Agent": f"HaremLinkBridge/{__version__}"})
     h = hashlib.sha256()
     with urllib.request.urlopen(req, timeout=timeout) as resp, tmp.open("wb") as out:
+        total = int(info.size or 0)
+        if not total:
+            try:
+                total = int(resp.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                total = 0
+        done = 0
+        if on_progress:
+            on_progress(0, total)
         while True:
             chunk = resp.read(1024 * 256)
             if not chunk:
                 break
             out.write(chunk)
             h.update(chunk)
+            done += len(chunk)
+            if on_progress:
+                on_progress(done, total)
+    if on_status:
+        on_status("Verifying download…")
     digest = h.hexdigest()
     if info.sha256 and digest != info.sha256:
         tmp.unlink(missing_ok=True)
@@ -142,12 +182,12 @@ def download_update(info: UpdateInfo, dest: Path, *, timeout: float = 120.0) -> 
 
 
 def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
-    """PowerShell swap only — never relaunches the app."""
+    """PowerShell script that swaps the exe and relaunches the app (1.4.0)."""
     target = str(current)
     new_path = str(new_exe)
     bak = str(current) + ".bak"
     log_path = str(current.parent / "_update_fail.txt")
-    note_path = str(current.parent / "_UPDATE_START_HERE.txt")
+    expected_leaf = EXE_NAME
 
     def q(p: str) -> str:
         return "'" + p.replace("'", "''") + "'"
@@ -160,18 +200,26 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             f"$new = {q(new_path)}",
             f"$bak = {q(bak)}",
             f"$log = {q(log_path)}",
-            f"$note = {q(note_path)}",
+            f"$expectedLeaf = {q(expected_leaf)}",
             "function Write-Fail([string]$msg) {",
             "  Set-Content -LiteralPath $log -Value $msg -Encoding UTF8",
             "}",
             "try {",
+            "  if ([IO.Path]::GetFileName($target) -ne $expectedLeaf) {",
+            "    Write-Fail ('refusing_update_wrong_target:' + $target)",
+            "    exit 1",
+            "  }",
+            "  if (-not $new.EndsWith(($expectedLeaf + '.new'))) {",
+            "    Write-Fail ('refusing_update_wrong_new:' + $new)",
+            "    exit 1",
+            "  }",
             "  $deadline = (Get-Date).AddSeconds(120)",
             "  while ((Get-Date) -lt $deadline) {",
             "    $proc = Get-Process -Id $pidToWait -ErrorAction SilentlyContinue",
             "    if (-not $proc) { break }",
-            "    Start-Sleep -Milliseconds 400",
+            "    Start-Sleep -Milliseconds 300",
             "  }",
-            "  Start-Sleep -Seconds 2",
+            "  Start-Sleep -Milliseconds 600",
             "  if (Test-Path -LiteralPath $bak) {",
             "    Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  }",
@@ -183,7 +231,7 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "      $renamed = $true",
             "      break",
             "    } catch {",
-            "      Start-Sleep -Milliseconds 500",
+            "      Start-Sleep -Milliseconds 300",
             "    }",
             "  }",
             "  if (-not $renamed -and (Test-Path -LiteralPath $target)) {",
@@ -198,7 +246,7 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "      $copied = $true",
             "      break",
             "    } catch {",
-            "      Start-Sleep -Milliseconds 500",
+            "      Start-Sleep -Milliseconds 300",
             "    }",
             "  }",
             "  if (-not $copied -or -not (Test-Path -LiteralPath $target)) {",
@@ -210,8 +258,15 @@ def build_update_ps1(*, pid: int, current: Path, new_exe: Path) -> str:
             "  }",
             "  Remove-Item -LiteralPath $bak -Force -ErrorAction SilentlyContinue",
             "  if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue }",
-            "  Set-Content -LiteralPath $note -Value 'Update installed. Double-click HaremLinkBridge.exe to start.' -Encoding UTF8",
-            "  try { Start-Process explorer.exe -ArgumentList ('/select,' + $target) } catch {}",
+            "  $workdir = Split-Path -Parent $target",
+            "  Start-Sleep -Milliseconds 300",
+            "  # Force the new one-file exe to create its own _MEI temp directory.",
+            "  $env:PYINSTALLER_RESET_ENVIRONMENT = '1'",
+            "  try {",
+            "    Start-Process -FilePath $target -WorkingDirectory $workdir",
+            "  } catch {",
+            "    Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c start \"\" \"' + $target + '\"') -WorkingDirectory $workdir -WindowStyle Hidden",
+            "  }",
             "  Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
             "  exit 0",
             "} catch {",
@@ -237,12 +292,12 @@ def build_update_bat(*, pid: int, current: Path, new_exe: Path) -> str:
 
 
 def apply_update_and_restart(new_exe: Path) -> None:
-    """Replace the running frozen exe via PowerShell (no relaunch), then exit."""
+    """Replace the running frozen exe via PowerShell and relaunch (1.4.0)."""
     current = _exe_path()
     if not getattr(sys, "frozen", False):
         logger.info("dev mode: downloaded update to %s (not applying)", new_exe)
         return
-    directory = app_dir()
+    directory = current.parent
     ps1 = directory / UPDATE_PS1
     bat = directory / UPDATE_BAT
     ps1.write_text(
@@ -253,6 +308,12 @@ def apply_update_and_restart(new_exe: Path) -> None:
         build_update_bat(pid=os.getpid(), current=current, new_exe=new_exe),
         encoding="utf-8",
     )
+    try:
+        from link_bridge.singleton import release_singleton
+
+        release_singleton()
+    except Exception:
+        pass
     # ``cmd /c start`` fully detaches the updater from our process tree.
     subprocess.Popen(
         [
@@ -276,8 +337,20 @@ def apply_update_and_restart(new_exe: Path) -> None:
     )
 
 
-def run_update(cfg: BridgeConfig, info: UpdateInfo) -> Path:
-    dest = app_dir() / f"{EXE_NAME}.new"
-    path = download_update(info, dest)
+def run_update(
+    cfg: BridgeConfig,
+    info: UpdateInfo,
+    *,
+    on_progress: ProgressCb = None,
+    on_status: StatusCb = None,
+) -> Path:
+    dest = exe_dir() / f"{EXE_NAME}.new"
+    if dest.name != f"{EXE_NAME}.new":
+        raise RuntimeError(f"refusing update dest {dest!s}")
+    if on_status:
+        on_status("Downloading…")
+    path = download_update(info, dest, on_progress=on_progress, on_status=on_status)
+    if on_status:
+        on_status("Installing update…")
     apply_update_and_restart(path)
     return path

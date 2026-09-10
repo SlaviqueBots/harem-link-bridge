@@ -327,10 +327,8 @@ def _beckon_command(source: Source, tag: str, hell_mode: HellMode) -> str:
 
 
 def _is_beckonable(tag: PricedTag) -> bool:
-    """Bot validate_general: category 0 only, no cosplay tags."""
+    """Bot validate_general: category 0 only. Cosplay tags are now allowed."""
     if tag.category != 0:
-        return False
-    if "(cosplay)" in tag.name:
         return False
     return True
 
@@ -358,17 +356,20 @@ async def _httpx_get_retry(
     cancel_check: CancelCheck | None = None,
     label: str = "",
     attempts: int = 4,
+    retry_statuses: frozenset[int] = frozenset({429, 502, 503, 504}),
 ):
-    """GET with retries — Danbooru often drops mid-batch TLS when clients churn."""
+    """GET with retries — Danbooru often drops mid-batch TLS or throws transient 5xx."""
     import httpx
 
     timeout = httpx.Timeout(30.0, connect=12.0)
     last: Exception | None = None
+    last_status: int | None = None
+    status_wait_base = 1.0
     for attempt in range(1, attempts + 1):
         if _cancelled(cancel_check):
             raise ValueError("Search cancelled.")
         try:
-            return await client.get(path, timeout=timeout)
+            r = await client.get(path, timeout=timeout)
         except FileNotFoundError as exc:
             # Usually a broken SSL_CERT_FILE / missing certifi cacert.pem.
             raise ValueError(
@@ -403,6 +404,24 @@ async def _httpx_get_retry(
                 f"retry {attempt}/{attempts} in {wait:.1f}s…",
             )
             await asyncio.sleep(wait)
+            continue
+        status = int(getattr(r, "status_code", 0) or 0)
+        if status in retry_statuses:
+            last_status = status
+            if attempt >= attempts:
+                break
+            wait = status_wait_base * attempt
+            _progress(
+                progress,
+                f"{label} HTTP {status} — retry {attempt}/{attempts} in {wait:.1f}s…",
+            )
+            await asyncio.sleep(wait)
+            continue
+        return r
+    if last_status is not None:
+        raise ValueError(
+            f"{label or path} failed after {attempts} tries (last HTTP {last_status})."
+        )
     raise ValueError(
         f"{label or path} failed after {attempts} tries"
         + (f": {last}" if last else ".")
@@ -432,6 +451,13 @@ async def _load_danbooru_tags(
     if own_client:
         client = DanbooruClient()
         await client.start()
+    # B7: DEV Conjure runs against this repo's bot helpers - if a Koara pull
+    # drops tag_info_many, say so plainly instead of AttributeError mid-run.
+    if not hasattr(client, "tag_info_many"):
+        raise ValueError(
+            "Bot code too old for this Bridge (missing DanbooruClient.tag_info_many) — "
+            "re-pull the live bot tree, then retry."
+        )
     try:
         assert client._client
         # Confirm the HTTP client actually got auth (guards against stale CFG bugs).
@@ -553,6 +579,12 @@ async def _load_rule34_tags(
     warnings: list[str] = []
     client = Rule34Client()
     await client.start()
+    # B7: same version guard as Danbooru above (missing tag_index_row).
+    if not hasattr(client, "tag_index_row"):
+        raise ValueError(
+            "Bot code too old for this Bridge (missing Rule34Client.tag_index_row) — "
+            "re-pull the live bot tree, then retry."
+        )
     try:
         if not client.api_ready:
             raise ValueError("Rule34 API keys missing in .env (RULE34_API_KEY / RULE34_USER_ID).")

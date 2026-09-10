@@ -9,6 +9,7 @@ from typing import Any
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from link_bridge.market_links import to_int
 from link_bridge.thumb_grid import (
     CELL_PAD,
     COLS,
@@ -28,12 +29,27 @@ BuyMarketFn = Callable[[int, OkCb, ErrCb], None]
 PreferOriginalFn = Callable[[], bool]
 GeoGetFn = Callable[[], str]
 GeoSetFn = Callable[[str], None]
+WindowStateGetFn = Callable[[], str]
+WindowStateSetFn = Callable[[str], None]
 FullImageGetFn = Callable[[], bool]
 FullImageSetFn = Callable[[bool], None]
 SavePricesFn = Callable[[str, str], None]
 
 SEARCH_DEBOUNCE_MS = 400
 RESIZE_DEBOUNCE_MS = 120
+
+
+def market_sort_newest(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Newest arrivals on top (server sorts too; this is the safety net for
+    mixed-kind pages). Tiles without created_at keep their relative order."""
+
+    def _key(it: dict[str, Any]) -> float:
+        try:
+            return float(it.get("created_at") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return sorted(items, key=_key, reverse=True)
 
 
 class MarketPanel(ttk.Frame):
@@ -56,9 +72,21 @@ class MarketPanel(ttk.Frame):
         full_image_set: FullImageSetFn | None = None,
         get_lot_window_geo: GeoGetFn | None = None,
         set_lot_window_geo: GeoSetFn | None = None,
+        get_lot_window_state: WindowStateGetFn | None = None,
+        set_lot_window_state: WindowStateSetFn | None = None,
         on_log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
+        # Frozen lot-window fixes: full-res picture + zoomed-state memory.
+        try:
+            from link_bridge import market_lot_patch
+
+            market_lot_patch.install(
+                get_lot_window_state or (lambda: "normal"),
+                set_lot_window_state,
+            )
+        except Exception:
+            pass
         self._fetch_page = fetch_page
         self._buy_listing = buy_listing
         self._prefer_original = prefer_original_open or (lambda: True)
@@ -93,6 +121,7 @@ class MarketPanel(ttk.Frame):
         self._thumb = 140
         self._busy = False
         self._gen = 0
+        self._mine_only = False
         self._search_after: str | None = None
         self._resize_after: str | None = None
         # Grid view: keep separate gallery instances for normal vs show-hidden.
@@ -136,6 +165,16 @@ class MarketPanel(ttk.Frame):
         ttk.Button(filt, text="Clear", command=self._clear_filters).pack(
             side=tk.LEFT, padx=(4, 0)
         )
+        self._mode_var = tk.StringVar(value="all")
+        for val, label in (("all", "All"), ("mine", "Mine")):
+            ttk.Radiobutton(
+                filt,
+                text=label,
+                value=val,
+                variable=self._mode_var,
+                command=self._on_mode_changed,
+                style="Toolbutton",
+            ).pack(side=tk.LEFT, padx=(10, 0) if val == "all" else (2, 0))
         self.min_var.trace_add("write", self._on_price_typed)
         self.max_var.trace_add("write", self._on_price_typed)
         self._show_hidden = tk.BooleanVar(value=False)
@@ -565,7 +604,7 @@ class MarketPanel(ttk.Frame):
         ):
             item = self._item_by_listing_id(lid)
             if item is not None:
-                cid = int(item.get("id") or 0)
+                cid = to_int(item.get("id"))
                 if cid > 0 and self._gallery.remove_char(cid):
                     self._note_gallery_char_removed()
                     self._on_log(f"Market lot {lid} hidden")
@@ -576,6 +615,10 @@ class MarketPanel(ttk.Frame):
 
     def _visible_items(self) -> list[dict[str, Any]]:
         return self._visible_items_for_mode(self._filter_mode())
+
+    def _on_mode_changed(self) -> None:
+        self._mine_only = self._mode_var.get() == "mine"
+        self.load_page(0)
 
     def refresh(self) -> None:
         self._query = (self.search_var.get() or "").strip()
@@ -679,15 +722,16 @@ class MarketPanel(ttk.Frame):
             self._page_size = int(body.get("page_size") or PAGE_SIZE)
             self._total = int(body.get("total") or 0)
             self._invalidate_view_slots()
-            self._items = list(body.get("items") or [])
+            self._items = market_sort_newest(list(body.get("items") or []))
             pages = max(1, (self._total + self._page_size - 1) // self._page_size)
             q_bit = f" · “{q}”" if q else ""
             price_bit = ""
             if self._min_price or self._max_price:
                 price_bit = f" · 🐷{self._min_price or '0'}–{self._max_price or '∞'}"
+            mode_bit = " · Mine" if self._mine_only else ""
             self.meta_var.set(
                 f"Market · page {self._page + 1}/{pages} · {self._total} lots"
-                f"{q_bit}{price_bit}"
+                f"{mode_bit}{q_bit}{price_bit}"
             )
             if not self._grid_view_flag:
                 host = self._canvas or self._grid_fr
@@ -713,6 +757,7 @@ class MarketPanel(ttk.Frame):
             self._max_price,
             on_ok,
             on_err,
+            mine_only=self._mine_only,
         )
 
     def _clear_square_grid(self) -> None:
@@ -923,18 +968,30 @@ class MarketPanel(ttk.Frame):
 
     def _on_primary_click(self, item: dict[str, Any]) -> None:
         if self._hide_mode.get():
-            lid = int(item.get("listing_id") or 0)
+            lid = to_int(item.get("listing_id"))
             if lid > 0:
                 self._toggle_hide_lot(lid)
             return
         self._open_lot_window(item)
 
     def _popup_thumb_menu(self, event, item: dict[str, Any]) -> None:
-        menu = tk.Menu(self, tearoff=0)
+        from link_bridge.market_hidden import is_hidden
+        from link_bridge.theme import new_themed_menu
+        from link_bridge.thumb_menu import _copy_to_clipboard, name_from_title_line
+
+        menu = new_themed_menu(self)
         name = (item.get("name") or f"#{item.get('id')}").strip()
         lid = int(item.get("listing_id") or 0)
-        price = int(item.get("price") or 0)
+        price = to_int(item.get("price"))
         buyable = bool(item.get("buyable")) and lid > 0
+        tag = str(item.get("character_tag") or item.get("canonical_tag") or "")
+        if name:
+            label = name if len(name) <= 48 else name[:45] + "…"
+            copy_line = name_from_title_line(name, tag)
+            menu.add_command(
+                label=label,
+                command=lambda: _copy_to_clipboard(self, copy_line),
+            )
         menu.add_command(
             label="Open lot…",
             command=lambda: self._open_lot_window(item),
@@ -982,13 +1039,23 @@ class MarketPanel(ttk.Frame):
             except Exception:
                 pass
 
+    def _guarded_buy_listing(self, listing_id: int, on_ok, on_err) -> None:
+        # Mine tab / own lots: the frozen lot window still offers Buy - stop
+        # it here with a clear note instead of a server round-trip rejection.
+        item = self._item_by_listing_id(int(listing_id))
+        if item is not None and item.get("mine"):
+            self.meta_var.set("Your lot - it sells when someone buys it.")
+            self._on_log(f"Market buy skipped: own lot {listing_id}")
+            return
+        self._buy_listing(int(listing_id), on_ok, on_err)
+
     def _open_lot_window(self, item: dict[str, Any]) -> None:
         from link_bridge.market_lot import open_market_lot
 
         open_market_lot(
             self.winfo_toplevel(),
             item,
-            buy_listing=self._buy_listing,
+            buy_listing=self._guarded_buy_listing,
             prefer_original_open=self._prefer_original,
             full_image_get=self._full_image_get,
             full_image_set=self._full_image_set,
@@ -1014,7 +1081,7 @@ class MarketPanel(ttk.Frame):
         ):
             item = self._item_by_listing_id(lid)
             if item is not None:
-                cid = int(item.get("id") or 0)
+                cid = to_int(item.get("id"))
                 if cid > 0 and self._gallery.remove_char(cid):
                     self._note_gallery_char_removed()
                     self._on_log(f"Market lot {lid} hidden")

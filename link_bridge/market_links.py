@@ -9,6 +9,14 @@ _RATINGS = ("g", "s", "q", "e")
 _LABELS = {"g": "G", "s": "S", "q": "Q", "e": "E"}
 
 
+def to_int(value: object, default: int = 0) -> int:
+    """Lenient int() for server payloads — garbage degrades to default."""
+    try:
+        return int(value or 0)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
 def normalize_artist_tag(raw: object) -> str:
     tag = (str(raw or "")).strip().replace(" ", "_")
     if not tag or tag.lower() in ("unknown", "?", ""):
@@ -34,12 +42,12 @@ def is_hell_item(item: dict[str, Any]) -> bool:
 
 
 def post_button_label(item: dict[str, Any]) -> str:
-    w = int(item.get("image_width") or 0)
-    h = int(item.get("image_height") or 0)
+    w = to_int(item.get("image_width"))
+    h = to_int(item.get("image_height"))
     if w > 0 and h > 0:
-        return f"{w}??{h}"
+        return f"{w}×{h}"
     if is_hell_item(item):
-        return "??r34??"
+        return "·r34·"
     return "Post"
 
 
@@ -69,7 +77,7 @@ def _client_browse_link_rows(item: dict[str, Any]) -> list[list[tuple[str, str]]
 
 
 def browse_link_rows(item: dict[str, Any]) -> list[list[tuple[str, str]]]:
-    """Omnicraft-style browse rows: This post, GSQE, Gm/Sm/???, r34 solo/m/slop."""
+    """Omnicraft-style browse rows: This post, GSQE, Gm/Sm/…, r34 solo/m/slop."""
     raw = item.get("browse_link_rows")
     if isinstance(raw, list) and raw:
         out: list[list[tuple[str, str]]] = []
@@ -127,7 +135,7 @@ def artist_open_urls(item: dict[str, Any]) -> list[str]:
 
 
 def browser_link_specs(item: dict[str, Any]) -> list[tuple[str, str]]:
-    """(label, url) pairs for Post + author solo + author ???solo."""
+    """(label, url) pairs for Post + author solo + author −solo."""
     out: list[tuple[str, str]] = []
     post = (item.get("post_url") or "").strip()
     if post.startswith("http"):
@@ -140,7 +148,7 @@ def browser_link_specs(item: dict[str, Any]) -> list[tuple[str, str]]:
         if solo:
             out.append((name, solo))
         if multi and multi != solo:
-            out.append((f"{name} ???solo", multi))
+            out.append((f"{name} −solo", multi))
     return out
 
 

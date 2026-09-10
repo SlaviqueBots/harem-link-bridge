@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import webbrowser
 from datetime import datetime
 
@@ -18,7 +19,21 @@ from link_bridge.ws_client import BridgeClient
 logger = logging.getLogger(__name__)
 
 _BALANCE_IDLE_MS = 600_000  # refresh balance every 10 minutes when idle
-_BALANCE_REFRESH_OPS = frozenset({"omni_tap_ok", "market_buy_ok"})
+_BALANCE_REFRESH_OPS = frozenset({"omni_tap_ok", "market_buy_ok", "market_sell_ok"})
+
+
+def disconnect_guidance(msg: str) -> str:
+    """B9: the server closes auth failures with 4001/4002 + a short reason
+    which the frozen client shows as one generic "Disconnected" line.
+    Append what-to-do guidance so re-pair vs allowlist is obvious."""
+    low = (msg or "").lower()
+    if "not allowlisted" in low:
+        return msg + " - ask the admin to allowlist this user (/bridge_allow)."
+    if "unauthorized" in low:
+        return msg + " - re-pair with /bridge in Telegram."
+    if "rate limited" in low:
+        return msg + " - too many tries, wait a minute then reconnect."
+    return msg
 
 
 def _force_window_front(win: tk.Misc, parent: tk.Misc | None = None) -> None:
@@ -41,24 +56,58 @@ def _force_window_front(win: tk.Misc, parent: tk.Misc | None = None) -> None:
 class UpdateProgressDialog(tk.Toplevel):
     """Small modal window with a real progress bar during exe download."""
 
+    STYLE = "Update.Horizontal.TProgressbar"
+
     def __init__(self, parent: tk.Misc, version: str) -> None:
         super().__init__(parent)
         self.title("Downloading update")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        try:
+            from link_bridge.theme import dialog_palette
+
+            pal = dialog_palette(parent)
+        except Exception:
+            pal = {}
+        bg = (pal.get("bg2") if pal else None) or "#2b2d31"
+        fg = (pal.get("fg") if pal else None) or "#f2f3f5"
+        self.configure(bg=bg)
+        try:
+            style = ttk.Style(self)
+            style.configure(
+                self.STYLE,
+                troughcolor=(pal.get("bg") if pal else "#1e1f22"),
+                background=(pal.get("accent") if pal else "#5865f2"),
+            )
+            bar_style = self.STYLE
+        except Exception:
+            bar_style = None
         frame = ttk.Frame(self, padding=16)
         frame.pack()
-        ttk.Label(
+        title_lbl = ttk.Label(
             frame,
             text=f"Downloading Harem Link Bridge v{version}",
             font=("", 10, "bold"),
-        ).pack(anchor=tk.W)
-        self.detail_var = tk.StringVar(value="Starting…")
-        ttk.Label(frame, textvariable=self.detail_var, wraplength=380).pack(
-            anchor=tk.W, pady=(8, 6)
         )
-        self.bar = ttk.Progressbar(frame, mode="determinate", length=380, maximum=100)
+        title_lbl.pack(anchor=tk.W)
+        self.detail_var = tk.StringVar(value="Starting…")
+        detail_lbl = ttk.Label(frame, textvariable=self.detail_var, wraplength=380)
+        detail_lbl.pack(anchor=tk.W, pady=(8, 6))
+        for lbl in (title_lbl, detail_lbl):
+            try:
+                lbl.configure(background=bg, foreground=fg)
+            except Exception:
+                pass
+        if bar_style:
+            self.bar = ttk.Progressbar(
+                frame, mode="determinate", length=380, maximum=100,
+                style=bar_style,
+            )
+        else:
+            self.bar = ttk.Progressbar(
+                frame, mode="determinate", length=380, maximum=100
+            )
         self.bar.pack(fill=tk.X)
         self.update_idletasks()
         px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
@@ -70,8 +119,10 @@ class UpdateProgressDialog(tk.Toplevel):
         bind_q_close(self)
 
     def show_front(self) -> None:
+        # Front ONLY the bar window. Never deiconify the main window here -
+        # it may live hidden in the tray and must stay there.
         try:
-            _force_window_front(self, self.master)
+            _force_window_front(self)
             self.after(1200, self._clear_topmost)
         except Exception:
             logger.debug("update progress focus failed", exc_info=True)
@@ -114,6 +165,12 @@ class LinkBridgeApp(tk.Tk):
 
         self.cfg = cfg or load_config()
         self.cfg.ensure_device_id()
+        try:
+            from link_bridge import image_cache
+
+            image_cache.configure(enabled=bool(self.cfg.offline_image_cache))
+        except Exception:
+            pass
         self._dev = bool(dev)
         self._alarm_poll_after: str | None = None
         self._alarm_ring_after: str | None = None
@@ -222,6 +279,8 @@ class LinkBridgeApp(tk.Tk):
             post_grid=self._roster_post_grid,
             register_cup=self._roster_register_cup,
             dm_craft=self._roster_dm_craft,
+            market_sell=self._roster_market_sell,
+            market_gift=self._roster_market_gift,
             list_sets=self._sets_list,
             rename_set=self._sets_rename,
             delete_set=self._sets_delete,
@@ -256,6 +315,8 @@ class LinkBridgeApp(tk.Tk):
             full_image_set=self._set_omni_full_image,
             get_market_lot_geo=lambda: str(self.cfg.market_lot_window_geometry or ""),
             set_market_lot_geo=self._save_market_lot_window_geometry,
+            get_lot_window_state=lambda: str(self.cfg.market_lot_window_state or "normal"),
+            set_lot_window_state=self._save_market_lot_window_state,
             on_log=self._append_log,
         )
         self._roster.pack(fill=tk.BOTH, expand=True)
@@ -334,6 +395,15 @@ class LinkBridgeApp(tk.Tk):
             variable=self.hidden_var,
             command=self._on_start_hidden_toggle,
         ).pack(side=tk.LEFT, padx=(12, 0))
+        opts3b = ttk.Frame(root)
+        opts3b.pack(fill=tk.X, **pad)
+        self.check_updates_var = tk.BooleanVar(value=bool(self.cfg.check_updates))
+        ttk.Checkbutton(
+            opts3b,
+            text="Check for updates on launch",
+            variable=self.check_updates_var,
+            command=self._on_check_updates_toggle,
+        ).pack(side=tk.LEFT)
         opts4 = ttk.Frame(root)
         opts4.pack(fill=tk.X, **pad)
         self.focus_tg_var = tk.BooleanVar(value=self.cfg.focus_telegram)
@@ -447,6 +517,31 @@ class LinkBridgeApp(tk.Tk):
             command=self._on_omni_maximized_toggle,
         ).pack(side=tk.LEFT, padx=(16, 0))
 
+        opts_cache = ttk.Frame(root)
+        opts_cache.pack(fill=tk.X, **pad)
+        self.offline_cache_var = tk.BooleanVar(
+            value=bool(self.cfg.offline_image_cache)
+        )
+        ttk.Checkbutton(
+            opts_cache,
+            text="Keep viewed pictures on this device (instant reopen)",
+            variable=self.offline_cache_var,
+            command=self._on_offline_cache_toggle,
+        ).pack(side=tk.LEFT)
+        self.offline_cache_label = tk.StringVar(value="")
+        ttk.Label(opts_cache, textvariable=self.offline_cache_label).pack(
+            side=tk.LEFT, padx=(10, 0)
+        )
+        ttk.Button(
+            opts_cache, text="Clear saved pictures", command=self._on_clear_image_cache
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        self._refresh_image_cache_label()
+        ttk.Button(
+            opts_cache,
+            text="Download all done…",
+            command=self._on_bulk_done_download,
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
         alarm_row = ttk.Frame(root)
         alarm_row.pack(fill=tk.X, **pad)
         self.tournament_alarm_var = tk.BooleanVar(
@@ -464,29 +559,29 @@ class LinkBridgeApp(tk.Tk):
             command=lambda: self._fire_tournament_alarm("dev", preview=True),
         ).pack(side=tk.LEFT, padx=(12, 0))
 
-        theme_row = ttk.Frame(root)
-        theme_row.pack(fill=tk.X, **pad)
-        ttk.Label(theme_row, text="Appearance").pack(side=tk.LEFT)
+        appearance_fr = ttk.LabelFrame(root, text="Appearance", padding=8)
+        appearance_fr.pack(fill=tk.X, **pad)
         from link_bridge.theme import normalize_theme
 
         self.theme_var = tk.StringVar(value=normalize_theme(self.cfg.ui_theme))
-        ttk.Radiobutton(
-            theme_row,
-            text="Dark",
-            value="dark",
-            variable=self.theme_var,
-            command=self._on_theme_change,
-        ).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Radiobutton(
-            theme_row,
-            text="Light",
-            value="light",
-            variable=self.theme_var,
-            command=self._on_theme_change,
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        theme_bar = ttk.Frame(appearance_fr)
+        theme_bar.pack(fill=tk.X)
+        ttk.Label(theme_bar, text="Theme").pack(side=tk.LEFT)
+        for value, label, padx in (
+            ("dark", "Dark", (10, 2)),
+            ("light", "Light", (4, 0)),
+        ):
+            ttk.Radiobutton(
+                theme_bar,
+                text=label,
+                value=value,
+                variable=self.theme_var,
+                command=self._on_theme_change,
+                style="Toolbutton",
+            ).pack(side=tk.LEFT, padx=padx)
 
-        scale_row = ttk.Frame(root)
-        scale_row.pack(fill=tk.X, **pad)
+        scale_row = ttk.Frame(appearance_fr)
+        scale_row.pack(fill=tk.X, pady=(8, 0))
         ttk.Label(scale_row, text="UI scale").pack(side=tk.LEFT)
         from link_bridge.config import _clamp_ui_scale
         from link_bridge.dpi import UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP
@@ -624,6 +719,8 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.open_browser = bool(self.open_var.get())
         self.cfg.start_hidden = bool(self.hidden_var.get())
         self.cfg.autostart = bool(self.autostart_var.get())
+        if hasattr(self, "check_updates_var"):
+            self.cfg.check_updates = bool(self.check_updates_var.get())
         self.cfg.focus_telegram = bool(self.focus_tg_var.get())
         self.cfg.natural_thumbs = bool(self.natural_thumbs_var.get())
         self.cfg.prefer_original_open = bool(self.prefer_original_var.get())
@@ -686,6 +783,12 @@ class LinkBridgeApp(tk.Tk):
                 from link_bridge.theme import palette
 
                 conjure.apply_ui_theme(palette(mode))
+            except Exception:
+                pass
+        themes = getattr(self, "_themes", None)
+        if themes is not None:
+            try:
+                themes.apply_ui_theme(pal)
             except Exception:
                 pass
         try:
@@ -814,6 +917,250 @@ class LinkBridgeApp(tk.Tk):
             else "Left-click: chat/sample URL."
         )
 
+    def _refresh_image_cache_label(self) -> None:
+        try:
+            from link_bridge import image_cache
+
+            if not image_cache.is_enabled():
+                self.offline_cache_label.set("off")
+                return
+            self.offline_cache_label.set(
+                f"{image_cache.file_count()} pics · "
+                f"{image_cache.format_size(image_cache.cache_size_bytes())}"
+            )
+        except Exception:
+            pass
+
+    def _on_offline_cache_toggle(self) -> None:
+        enabled = bool(self.offline_cache_var.get())
+        self.cfg.offline_image_cache = enabled
+        save_config(self.cfg)
+        try:
+            from link_bridge import image_cache
+
+            image_cache.configure(enabled=enabled)
+        except Exception:
+            pass
+        self._refresh_image_cache_label()
+        self._append_log(
+            "Picture cache: on (viewed pics stay on this device)."
+            if enabled
+            else "Picture cache: off (new views are not stored)."
+        )
+
+    def _on_clear_image_cache(self) -> None:
+        from tkinter import messagebox
+
+        try:
+            from link_bridge import image_cache
+
+            count = image_cache.file_count()
+            size = image_cache.format_size(image_cache.cache_size_bytes())
+        except Exception:
+            return
+        if count <= 0:
+            self._append_log("Picture cache is already empty.")
+            return
+        if not messagebox.askyesno(
+            "Clear saved pictures",
+            f"Delete {count} saved pictures ({size}) from this device?",
+            parent=self,
+        ):
+            return
+        try:
+            removed = image_cache.clear()
+        except Exception:
+            removed = 0
+        self._refresh_image_cache_label()
+        self._append_log(f"Cleared {removed} saved pictures.")
+
+    def _on_bulk_done_download(self) -> None:
+        from link_bridge import image_cache
+
+        # Bulk download only makes sense with the permanent cache on.
+        if not image_cache.is_enabled():
+            self.offline_cache_var.set(True)
+            self._on_offline_cache_toggle()
+        if getattr(self, "_bulk_dialog", None) is not None:
+            try:
+                win = self._bulk_dialog
+                if win.winfo_exists():
+                    win.lift()
+                    return
+            except Exception:
+                pass
+            self._bulk_dialog = None
+        if self._client is None or self._loop is None:
+            self._append_log("Not connected - press Connect first.")
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title("Downloading done pictures")
+        dialog.geometry("420x140")
+        dialog.resizable(False, False)
+        try:
+            dialog.transient(self)
+        except Exception:
+            pass
+        # Match the app theme (dark by default): bare Toplevels + ttk
+        # defaults otherwise render in flat system grey.
+        try:
+            from link_bridge.theme import dialog_palette
+
+            _pal = dialog_palette(self)
+            dialog.configure(bg=_pal["bg2"])
+        except Exception:
+            _pal = {}
+        self._bulk_dialog = dialog
+        self._bulk_label_var = tk.StringVar(value="Listing your done cards…")
+        _label_opts: dict = {}
+        if _pal:
+            _label_opts = {
+                "background": _pal["bg2"],
+                "foreground": _pal["fg"],
+            }
+        ttk.Label(dialog, textvariable=self._bulk_label_var, **_label_opts).pack(
+            pady=(12, 6)
+        )
+        try:
+            _bst = ttk.Style(dialog)
+            _bst.configure(
+                "Bulk.Horizontal.TProgressbar",
+                troughcolor=(_pal.get("bg") if _pal else "#1e1f22"),
+                background=(_pal.get("accent") if _pal else "#5865f2"),
+            )
+            self._bulk_bar = ttk.Progressbar(
+                dialog,
+                orient=tk.HORIZONTAL,
+                length=360,
+                mode="determinate",
+                style="Bulk.Horizontal.TProgressbar",
+            )
+        except Exception:
+            self._bulk_bar = ttk.Progressbar(
+                dialog, orient=tk.HORIZONTAL, length=360, mode="determinate"
+            )
+        self._bulk_bar.pack(pady=(0, 10))
+        self._bulk_bar["maximum"] = 100
+        self._bulk_bar["value"] = 0
+        self._bulk_close_btn = ttk.Button(dialog, text="Cancel")
+        self._bulk_close_btn.pack()
+        self._bulk_run = None
+
+        def _close() -> None:
+            run = getattr(self, "_bulk_run", None)
+            if run is not None:
+                try:
+                    run.cancel()
+                except Exception:
+                    pass
+            self._bulk_dialog = None
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+
+        self._bulk_close_btn.configure(command=_close)
+        dialog.protocol("WM_DELETE_WINDOW", _close)
+
+        def _progress(done: int, total: int, nbytes: int, cached: int, failed: int) -> None:
+            def _apply() -> None:
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                    pct = (100.0 * done / total) if total > 0 else 0.0
+                    self._bulk_bar["value"] = pct
+                    self._bulk_label_var.set(
+                        f"{done}/{total} · {image_cache.format_size(nbytes)}"
+                        f" new · {cached} cached · {failed} failed"
+                    )
+                except Exception:
+                    pass
+
+            self._ui(_apply)
+
+        def _finished(summary: dict) -> None:
+            def _apply() -> None:
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                    self._bulk_bar["value"] = 100
+                    if summary.get("cancelled"):
+                        self._bulk_label_var.set("Cancelled.")
+                    elif summary.get("error") and not summary.get("total"):
+                        self._bulk_label_var.set(
+                            f"Failed: {summary.get('error')}"
+                        )
+                    else:
+                        self._bulk_label_var.set(
+                            f"Done: {summary.get('done')}/{summary.get('total')} · "
+                            f"{image_cache.format_size(summary.get('bytes') or 0)} new · "
+                            f"{summary.get('failed')} failed"
+                        )
+                    self._bulk_close_btn.configure(text="Close")
+                except Exception:
+                    pass
+                self._refresh_image_cache_label()
+                self._append_log(f"Bulk download finished: {summary}")
+
+            self._ui(_apply)
+
+        def _fetch_page(page: int) -> tuple[list, int]:
+            import concurrent.futures
+
+            fut: concurrent.futures.Future = concurrent.futures.Future()
+
+            def on_ok(body: dict) -> None:
+                if not fut.done():
+                    fut.set_result(body)
+
+            def on_err(exc: BaseException) -> None:
+                if not fut.done():
+                    fut.set_exception(exc)
+
+            from link_bridge.roster import PAGE_SIZE
+
+            self._schedule_coro(
+                lambda c: c.request_roster_page(
+                    int(page),
+                    PAGE_SIZE,
+                    q="",
+                    done=1,
+                    set_name="",
+                    kind="",
+                    timeout=30.0,
+                ),
+                on_ok,
+                on_err,
+            )
+            while True:
+                try:
+                    body = fut.result(timeout=0.5)
+                    break
+                except concurrent.futures.TimeoutError:
+                    run = getattr(self, "_bulk_run", None)
+                    if run is not None and run.cancelled:
+                        raise asyncio.CancelledError("cancelled")
+                    continue
+            items = list(body.get("items") or [])
+            return items, int(body.get("total") or 0)
+
+        def _fetch_bytes(url: str) -> bytes:
+            from link_bridge.thumb_grid import fetch_url_bytes
+
+            return bytes(fetch_url_bytes(url, timeout=30, retries=2) or b"")
+
+        from link_bridge.bulk_download import BulkDoneDownload
+
+        self._bulk_run = BulkDoneDownload(
+            fetch_page=_fetch_page,
+            fetch_bytes=_fetch_bytes,
+            is_cached=lambda u: image_cache.get(u) is not None,
+            store=lambda u, d: image_cache.put(u, d),
+            on_progress=_progress,
+            on_done=_finished,
+        )
+        self._bulk_run.start()
+
     def _on_main_maximized_toggle(self) -> None:
         val = "zoomed" if bool(self.main_maximized_var.get()) else "normal"
         self.cfg.window_state = val
@@ -870,10 +1217,20 @@ class LinkBridgeApp(tk.Tk):
         )
 
     def _on_tournament_time_err(self, exc) -> None:
+        # A17: the tournament_time op is a runtime patch on frozen client
+        # bytecode - if an exe rebuild breaks it, say so loudly instead of
+        # re-polling forever in silence.
+        fails = int(getattr(self, "_alarm_poll_fails", 0) or 0) + 1
+        self._alarm_poll_fails = fails
         self._alarm_poll_after = self.after(30000, self._request_tournament_time)
-        logger.debug("tournament time poll failed: %s", exc)
+        if fails >= 3:
+            self._append_log(f"Tournament alarm unavailable: {exc}")
+            logger.warning("tournament time poll failed %sx: %s", fails, exc)
+        else:
+            logger.debug("tournament time poll failed: %s", exc)
 
     def _on_tournament_time_ok(self, body: dict) -> None:
+        self._alarm_poll_fails = 0
         from link_bridge.tournament_alarm import delay_ms_until_ring, parse_ok
 
         snap = parse_ok(body) if isinstance(body, dict) else None
@@ -903,6 +1260,12 @@ class LinkBridgeApp(tk.Tk):
             self._fire_tournament_alarm(day)
             return
         if delay is not None:
+            ring_job = getattr(self, "_alarm_ring_after", None)
+            if ring_job:
+                try:
+                    self.after_cancel(ring_job)
+                except Exception:
+                    pass
             self._alarm_ring_after = self.after(
                 delay, lambda d=day: self._fire_tournament_alarm(d)
             )
@@ -1171,8 +1534,8 @@ class LinkBridgeApp(tk.Tk):
 
         def on_status(msg: str) -> None:
             def _apply() -> None:
-                self.status_var.set(msg)
-                self._append_log(msg)
+                self.status_var.set(disconnect_guidance(msg))
+                self._append_log(disconnect_guidance(msg))
                 if msg.startswith("Connected") and self._roster is not None:
                     self._roster.load_page(0)
                     self._sync_themes_tab()
@@ -1257,11 +1620,17 @@ class LinkBridgeApp(tk.Tk):
         self._request_balance()
 
     def _request_balance(self) -> None:
+        # B8: omni/market replies already carry balance (chips sync from
+        # the body) - do not storm the server, 5s coalescing window.
+        if time.monotonic() - getattr(self, "_last_balance_ok", 0.0) < 5.0:
+            self._arm_balance_poll()
+            return
         if self._client is None or self._loop is None:
             return
 
         def on_ok(body: dict) -> None:
             if body.get("op") == "balance_ok":
+                self._last_balance_ok = time.monotonic()
                 self._apply_balance_body(body)
             self._arm_balance_poll()
 
@@ -1286,6 +1655,11 @@ class LinkBridgeApp(tk.Tk):
         client = self._client
         loop = self._loop
         if client is None or loop is None or not loop.is_running():
+            # A19: offline taps looked idle, not disconnected - nudge.
+            try:
+                self._append_log("Not connected - press Connect to rejoin the bot.")
+            except Exception:
+                pass
             on_err(RuntimeError("not connected"))
             return
 
@@ -1355,10 +1729,24 @@ class LinkBridgeApp(tk.Tk):
         )
 
     def _market_fetch_page(
-        self, page: int, q: str, min_price: str, max_price: str, on_ok, on_err
+        self, page: int, q: str, min_price: str, max_price: str, on_ok, on_err,
+        *, mine_only: bool = False,
     ) -> None:
         from link_bridge.roster import PAGE_SIZE
 
+        if mine_only:
+            self._schedule_coro(
+                lambda c: c.request_market_page_mine(
+                    page,
+                    PAGE_SIZE,
+                    q=(q or "").strip(),
+                    min_price=(min_price or "").strip(),
+                    max_price=(max_price or "").strip(),
+                ),
+                on_ok,
+                on_err,
+            )
+            return
         self._schedule_coro(
             lambda c: c.request_market_page(
                 page,
@@ -1466,8 +1854,20 @@ class LinkBridgeApp(tk.Tk):
             self._roster.sync_hide_in_any_set_button()
 
     def _roster_open_omni(self, char_id: int, on_ok, on_err) -> None:
+        # A16: the UI opens locally (works offline), but the server op must
+        # still fire - it sends the card/omnicraft DM and enforces cooldown.
         self._open_omni_ui(int(char_id))
-        on_ok({"op": "open_omni_ok", "char_id": int(char_id)})
+        ok_body = {"op": "open_omni_ok", "char_id": int(char_id)}
+        try:
+            self._schedule_coro(
+                lambda c: c.request_open_omni(int(char_id)),
+                lambda _body: on_ok(ok_body),
+                # Offline / server-busy: UI is already open, do not fail it -
+                # just note why no DM will arrive.
+                lambda exc: (self._append_log(f"Omni DM skipped: {exc}"), on_ok(ok_body)),
+            )
+        except Exception:
+            on_ok(ok_body)
 
     def _omni_fetch_state(self, char_id: int, on_ok, on_err, mode: str = "omni") -> None:
         self._schedule_coro(
@@ -1576,10 +1976,7 @@ class LinkBridgeApp(tk.Tk):
         if self._roster is None:
             return
         try:
-            if done and getattr(self._roster, "_mode", "") == "undone":
-                self._roster.remove_char_from_view(int(char_id))
-            elif (not done) and getattr(self._roster, "_mode", "") == "done":
-                self._roster.remove_char_from_view(int(char_id))
+            self._roster.sync_after_done_change(int(char_id), done=bool(done))
         except Exception:
             logger.debug("omni done sync failed", exc_info=True)
 
@@ -1674,6 +2071,18 @@ class LinkBridgeApp(tk.Tk):
         except Exception:
             pass
 
+    def _save_market_lot_window_state(self, state: str) -> None:
+        text = (state or "").strip().lower()
+        if text not in ("normal", "zoomed"):
+            text = "normal"
+        if text == (self.cfg.market_lot_window_state or "normal"):
+            return
+        self.cfg.market_lot_window_state = text
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+
     def _set_market_grid_view(self, enabled: bool) -> None:
         flag = bool(enabled)
         if flag == bool(self.cfg.market_grid_view):
@@ -1710,6 +2119,22 @@ class LinkBridgeApp(tk.Tk):
     def _roster_register_cup(self, char_id: int, on_ok, on_err) -> None:
         self._schedule_coro(
             lambda c: c.request_register_cup(char_id),
+            on_ok,
+            on_err,
+        )
+
+    def _roster_market_sell(self, char_id: int, price: int, on_ok, on_err) -> None:
+        # B1: desktop sell, same MarketService path as Telegram sell.
+        self._schedule_coro(
+            lambda c: c.request_market_sell(int(char_id), int(price)),
+            on_ok,
+            on_err,
+        )
+
+    def _roster_market_gift(self, char_id: int, target: str, on_ok, on_err) -> None:
+        # B1: desktop gift, same MarketService path as Telegram gift.
+        self._schedule_coro(
+            lambda c: c.request_market_gift(int(char_id), str(target)),
             on_ok,
             on_err,
         )
@@ -1768,6 +2193,10 @@ class LinkBridgeApp(tk.Tk):
         except Exception:
             self._themes_tab_index = None
         self._append_log("Themes admin tab unlocked.")
+        from link_bridge.theme import apply_app_theme, palette, normalize_theme
+
+        apply_app_theme(panel, normalize_theme(self.cfg.ui_theme))
+        panel.apply_ui_theme(palette(normalize_theme(self.cfg.ui_theme)))
         panel.reload()
 
     def _hide_themes_tab(self) -> None:
@@ -1793,7 +2222,7 @@ class LinkBridgeApp(tk.Tk):
             from conjure_finder.bootstrap import apply_env, set_app_root
             from conjure_finder.gui import ConjureFinderApp
             from conjure_finder.settings import apply_settings_file, settings_status
-            from link_bridge.config import app_dir
+            from link_bridge.config import app_dir, exe_dir
         except Exception as exc:
             self._append_log(f"Conjure Finder tab unavailable: {exc}")
             return
@@ -1802,7 +2231,16 @@ class LinkBridgeApp(tk.Tk):
             from link_bridge.ssl_certs import ensure_ssl_certs
 
             ensure_ssl_certs()
-            set_app_root(app_dir())
+            root = app_dir()
+            exe_env = exe_dir() / "conjure_finder.env"
+            if exe_env.is_file() and not (root / "conjure_finder.env").is_file():
+                try:
+                    import shutil
+
+                    shutil.copy2(exe_env, root / "conjure_finder.env")
+                except OSError:
+                    root = exe_dir()
+            set_app_root(root)
             apply_env()
             apply_settings_file()
         except Exception as exc:
@@ -2117,6 +2555,10 @@ class LinkBridgeApp(tk.Tk):
         self.cfg.start_hidden = bool(self.hidden_var.get())
         save_config(self.cfg)
 
+    def _on_check_updates_toggle(self) -> None:
+        self.cfg.check_updates = bool(self.check_updates_var.get())
+        save_config(self.cfg)
+
     def _on_autostart_toggle(self) -> None:
         enabled = bool(self.autostart_var.get())
         try:
@@ -2180,8 +2622,7 @@ class LinkBridgeApp(tk.Tk):
                 f"Version {info.version} is available (you have {__version__}).\n\n"
                 "Download and install now? (~1–2 min on a normal connection)\n\n"
                 "A progress window will show % and MB. The app will close "
-                "when ready — then start HaremLinkBridge.exe yourself "
-                "(the install folder will open).",
+                "and restart on the new build by itself.",
             )
             if not ok:
                 return
@@ -2229,13 +2670,15 @@ class LinkBridgeApp(tk.Tk):
         except Exception as exc:
             if dlg is not None:
                 self._ui(dlg.destroy)
-            self._ui(
-                lambda: (
-                    self.status_var.set(f"Update failed: {exc}"),
-                    self._append_log(f"Update failed: {exc}"),
-                    messagebox.showerror("Harem Link Bridge", f"Update failed:\n{exc}"),
-                )
-            )
+
+            def _fail() -> None:
+                # No _force_window_front here: the main window may be hidden
+                # in the tray - the error box below is the notification.
+                self.status_var.set(f"Update failed: {exc}")
+                self._append_log(f"Update failed: {exc}")
+                messagebox.showerror("Harem Link Bridge", f"Update failed:\n{exc}")
+
+            self._ui(_fail)
             return
         if dlg is not None:
             self._ui(dlg.destroy)
@@ -2310,6 +2753,12 @@ class LinkBridgeApp(tk.Tk):
                 self._tray.stop()
             except Exception:
                 pass
+        try:
+            from link_bridge.singleton import release_singleton
+
+            release_singleton()
+        except Exception:
+            pass
         self.destroy()
 
 

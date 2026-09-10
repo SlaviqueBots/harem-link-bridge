@@ -102,7 +102,6 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config()
     if args.dev:
-        cfg.check_updates = False
         cfg.start_hidden = False
         app = LinkBridgeApp(cfg)
         app.title("Harem Link Bridge  DEV  (local source)")

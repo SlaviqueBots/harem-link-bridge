@@ -4,7 +4,9 @@ Config lives next to the executable (or this package) in ``harem_link_bridge.jso
 so you can replace the .exe without losing settings.
 """
 
-__version__ = "1.4.1"
+__version__ = "1.4.22"
 
 # Public source (client only — no bot secrets). Shown in the app for trust.
 SOURCE_URL = "https://github.com/SlaviqueBots/harem-link-bridge"
+RELEASES_URL = f"{SOURCE_URL}/releases"
+UPDATE_MANIFEST_URL = f"{SOURCE_URL}/releases/latest/download/version.json"

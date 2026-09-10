@@ -27,16 +27,35 @@ def _ext_from_url(url: str) -> str:
 
 
 def _download(url: str) -> Path | None:
+    from link_bridge import image_cache
+
+    # Permanent cache first: instant reopen, no download.
+    stored = image_cache.get(url)
+    if stored:
+        _TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        key = abs(hash(url)) % (10**12)
+        dest = _TEMP_DIR / f"img_{key}{_ext_from_url(url)}"
+        try:
+            if not (dest.is_file() and dest.stat().st_size > 0):
+                dest.write_bytes(stored)
+            return dest
+        except OSError:
+            pass
     _TEMP_DIR.mkdir(parents=True, exist_ok=True)
     key = abs(hash(url)) % (10**12)
     dest = _TEMP_DIR / f"img_{key}{_ext_from_url(url)}"
     if dest.is_file() and dest.stat().st_size > 0:
+        try:
+            image_cache.put(url, dest.read_bytes())
+        except OSError:
+            pass
         return dest
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        data = resp.read()
+    from link_bridge.thumb_grid import fetch_url_bytes
+
+    data = fetch_url_bytes(url, timeout=30, retries=2)
     if not data:
         return None
+    image_cache.put(url, data)
     tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.write_bytes(data)
     tmp.replace(dest)

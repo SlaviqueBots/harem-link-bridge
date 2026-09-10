@@ -27,6 +27,8 @@ PostGridFn = Callable[[int, OkCb, ErrCb], None]
 OpenOmniFn = Callable[[int, OkCb, ErrCb], None]
 RegisterCupFn = Callable[[int, OkCb, ErrCb], None]
 DmCraftFn = Callable[[int, str, OkCb, ErrCb], None]
+MarketSellFn = Callable[[int, int, OkCb, ErrCb], None]
+MarketGiftFn = Callable[[int, str, OkCb, ErrCb], None]
 GetSetNamesFn = Callable[[], list[str]]
 OnSetNamesFn = Callable[[list[str]], None]
 FocusPrefFn = Callable[[], bool]
@@ -51,6 +53,8 @@ class PrimedPanel(ttk.Frame):
         open_omni_ui: OpenOmniUiFn | None = None,
         register_cup: RegisterCupFn | None = None,
         dm_craft: DmCraftFn | None = None,
+        market_sell: MarketSellFn | None = None,
+        market_gift: MarketGiftFn | None = None,
         should_focus_telegram: FocusPrefFn | None = None,
         get_post_target: TargetGetFn | None = None,
         set_post_target: TargetSetFn | None = None,
@@ -73,6 +77,8 @@ class PrimedPanel(ttk.Frame):
         self._open_omni_ui = open_omni_ui
         self._register_cup = register_cup
         self._dm_craft = dm_craft
+        self._market_sell = market_sell
+        self._market_gift = market_gift
         self._should_focus = should_focus_telegram or (lambda: False)
         self._get_post_target = get_post_target or (lambda: "group")
         self._set_post_target = set_post_target
@@ -545,6 +551,9 @@ class PrimedPanel(ttk.Frame):
                 self._set_nav(True)
                 return
             raw_items = list(body.get("items") or [])
+            if not self._whose:
+                # Listed cards live in the Market, not the working roster.
+                raw_items = [it for it in raw_items if not it.get("listed")]
             self._invalidate_view_slots()
             self._items = raw_items
             try:
@@ -735,6 +744,12 @@ class PrimedPanel(ttk.Frame):
             on_register_cup=self._click_register_cup
             if self._register_cup is not None
             else None,
+            on_market_sell=self._click_market_sell
+            if self._market_sell is not None
+            else None,
+            on_market_gift=self._click_market_gift
+            if self._market_gift is not None
+            else None,
             on_show_checkpoint=self._show_checkpoint_image,
             on_edit_flavour=self._edit_flavour,
             on_edit_note=self._edit_note,
@@ -743,6 +758,9 @@ class PrimedPanel(ttk.Frame):
             has_checkpoint=bool(item.get("has_checkpoint")),
             checkpoint_image_url=str(item.get("checkpoint_image_url") or ""),
             char_name=name,
+            character_tag=str(item.get("character_tag") or item.get("canonical_tag") or ""),
+            copyright_tag=str(item.get("copyright_tag") or ""),
+            artist_tag=str(item.get("artist_tag") or ""),
             set_names=list(self._get_set_names()),
             current_set=str(item.get("set") or ""),
             on_add_to_set=self._add_to_set,
@@ -865,11 +883,7 @@ class PrimedPanel(ttk.Frame):
                 notice = detail if detail and detail != "ok" else f"{label} ✓"
                 self.meta_var.set(f"#{char_id}: {notice}")
                 if open_omni_after_mirror and self._open_omni_ui is not None:
-                    from link_bridge.thumb_menu import mirror_char_id_from_craft
-
-                    mirror_id = mirror_char_id_from_craft(body)
-                    if mirror_id > 0:
-                        self._open_omni_ui(mirror_id)
+                    self._open_omni_ui(int(char_id))
                 if silent:
                     from link_bridge.thumb_menu import apply_silent_craft_item
 
@@ -916,7 +930,11 @@ class PrimedPanel(ttk.Frame):
         self._render_grid(preserve_scroll=True)
 
     def _click_register_cup(self, char_id: int) -> None:
-        if char_id <= 0 or self._busy or self._register_cup is None:
+        if char_id <= 0 or self._register_cup is None:
+            return
+        if self._busy:
+            # A19: a tap during a craft looked broken, not busy.
+            self.meta_var.set("Busy - try again in a moment…")
             return
         self._busy = True
         self.meta_var.set(f"Registering #{char_id} for daily cup…")
@@ -939,6 +957,62 @@ class PrimedPanel(ttk.Frame):
             self._set_nav(True)
 
         self._register_cup(int(char_id), on_ok, on_err)
+
+    def _click_market_sell(self, char_id: int, price: int) -> None:
+        # B1: desktop sell (same path as Telegram sell).
+        if char_id <= 0 or price <= 0 or self._busy or self._market_sell is None:
+            return
+        self._busy = True
+        self.meta_var.set(f"Listing #{char_id} for {price}…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "market_sell_ok":
+                lid = body.get("listing_id") or "?"
+                self.meta_var.set(f"#{char_id} listed for {price} (lot #{lid})")
+                self._on_log(f"Market sell ok char={char_id} price={price} lot={lid}")
+                self.load_page(self._page)
+            else:
+                err = body.get("error") or "failed"
+                self.meta_var.set(f"Sell failed: {err}")
+                self._on_log(f"Market sell err: {err}")
+            self._set_nav(True)
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Sell failed: {exc}")
+            self._on_log(f"Market sell failed: {exc}")
+            self._set_nav(True)
+
+        self._market_sell(int(char_id), int(price), on_ok, on_err)
+
+    def _click_market_gift(self, char_id: int, target: str) -> None:
+        # B1: desktop gift (same path as Telegram gift).
+        if char_id <= 0 or not (target or "").strip() or self._busy or self._market_gift is None:
+            return
+        target = target.strip()
+        self._busy = True
+        self.meta_var.set(f"Gifting #{char_id} to {target}…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "market_gift_ok":
+                self.meta_var.set(f"#{char_id} gifted to {target}")
+                self._on_log(f"Market gift ok char={char_id} to={target}")
+                self.load_page(self._page)
+            else:
+                err = body.get("error") or "failed"
+                self.meta_var.set(f"Gift failed: {err}")
+                self._on_log(f"Market gift err: {err}")
+            self._set_nav(True)
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Gift failed: {exc}")
+            self._on_log(f"Market gift failed: {exc}")
+            self._set_nav(True)
+
+        self._market_gift(int(char_id), target, on_ok, on_err)
 
     def _click_post(self, char_id: int) -> None:
         if char_id <= 0 or self._busy:

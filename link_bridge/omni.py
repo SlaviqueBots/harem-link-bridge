@@ -93,7 +93,7 @@ _DEFAULT_ETA_SEC: dict[str, float] = {
 }
 
 _NO_PROGRESS_OPS = frozenset(
-    {"mi", "dn", "ud", "hi", "sh", "fl", "flset", "rfl", "cp", "uo", "dmp", "vr"}
+    {"mi", "dn", "ud", "hi", "sh", "fl", "flset", "rfl", "cp", "uo", "_dmp", "vr"}
 )
 
 _ADAPTIVE_ETA: dict[str, float] = dict(_DEFAULT_ETA_SEC)
@@ -666,7 +666,9 @@ def find_omni_repeat_spec(
         for btn in row:
             if not isinstance(btn, dict):
                 continue
-            if not str(btn.get("op") or "").strip():
+            op = str(btn.get("op") or "").strip()
+            if not op or op == "mi":
+                # Mirror is a one-off status action — never the repeat target.
                 continue
             present.append(btn)
             if btn.get("lit"):
@@ -1402,7 +1404,8 @@ class OmniPanel(ttk.Frame):
         )
         try:
             new_cid = int(body.get("char_id") or 0)
-            if new_cid > 0:
+            # Mirror creates a Done copy; Omni must stay on the craftable original.
+            if new_cid > 0 and str(body.get("craft") or "") != "mi":
                 self._char_id = new_cid
         except (TypeError, ValueError):
             pass
@@ -2028,7 +2031,9 @@ class OmniPanel(ttk.Frame):
             status.append(
                 {
                     "text": "DM preview",
-                    "op": "dmp",
+                    # B14: leading underscore marks this as client-only - it
+                    # must never go out as omni_tap (server drops unknowns).
+                    "op": "_dmp",
                     "arg": "",
                     "url": "",
                     "kind": "status",
@@ -2127,13 +2132,16 @@ class OmniPanel(ttk.Frame):
             else:
                 self._set_status("Refine unavailable")
             return
-        if op == "dmp":
+        if op == "_dmp":
             self._click_dm_preview()
             return
         if op == "fl":
             self._edit_flavour()
             return
-        self._last_repeat = {"op": op, "arg": arg, "text": label, "lit": True}
+        if op != "mi":
+            # Mirror must not steal the repeat slot — space keeps repeating the
+            # previous craft (e.g. the last reshape) after a mirror.
+            self._last_repeat = {"op": op, "arg": arg, "text": label, "lit": True}
         arg_s = None if arg is None or str(arg).strip() == "" else str(arg).strip()
         self._busy = True
         self._busy_gen += 1
@@ -2193,7 +2201,11 @@ class OmniPanel(ttk.Frame):
             else:
                 self._stop_progress(done=False)
                 err = body.get("error") or body.get("detail") or "failed"
+                # A18: paid-craft failures must be unmissable, not a quiet
+                # status line - flash + log carry the server message.
                 self._set_status(str(err))
+                self._on_log(f"{self._mode} {op} #{self._char_id} FAILED: {err}")
+                self._flash_center_notice("FAILED", str(err)[:88])
                 if body.get("buttons"):
                     self._apply_state(body, acquired=False)
 
@@ -2203,6 +2215,8 @@ class OmniPanel(ttk.Frame):
             self._busy = False
             self._stop_progress(done=False)
             self._set_status(f"Failed: {exc}")
+            self._on_log(f"{self._mode} {op} #{self._char_id} FAILED: {exc}")
+            self._flash_center_notice("FAILED", str(exc)[:88])
 
         self._tap(self._char_id, op, arg_s, on_ok, on_err, self._mode)
 

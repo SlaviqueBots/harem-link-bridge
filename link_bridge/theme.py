@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from tkinter import ttk
 from typing import Any
@@ -79,8 +80,262 @@ def is_dark(widget: tk.Misc | None) -> bool:
     return surface_for(widget).get("mode") != "light"
 
 
+def dialog_palette(parent: tk.Misc | None) -> dict[str, str]:
+    """Colors for modal dialogs, editors, and tk menus (active app theme)."""
+    pal = surface_for(parent)
+    if not pal.get("bg"):
+        pal = palette("dark")
+    return {
+        "mode": pal.get("mode") or "dark",
+        "bg": pal.get("bg") or "#1e1f22",
+        "bg2": pal.get("bg2") or "#2b2d31",
+        "fg": pal.get("fg") or "#f2f3f5",
+        "muted": pal.get("muted") or "#b5bac1",
+        "entry_bg": pal.get("log_bg") or pal.get("entry") or "#111214",
+        "select": pal.get("select") or "#404249",
+        "accent": pal.get("accent") or "#5865f2",
+        "hover": pal.get("hover") or pal.get("bg3") or "#35373c",
+    }
+
+
+def _hex_to_colorref(hex_color: str) -> int:
+    text = (hex_color or "").strip().lstrip("#")
+    if len(text) != 6:
+        return 0x002D2B2B  # DARK bg2 as BGR
+    r = int(text[0:2], 16)
+    g = int(text[2:4], 16)
+    b = int(text[4:6], 16)
+    return r | (g << 8) | (b << 16)
+
+
+_WIN_MENU_BRUSHES: dict[int, int] = {}
+_WIN_SKINNED_HWNDS: set[int] = set()
+
+
+def _win_solid_brush(colorref: int) -> int:
+    br = _WIN_MENU_BRUSHES.get(colorref)
+    if br:
+        return br
+    import ctypes
+
+    br = int(ctypes.windll.gdi32.CreateSolidBrush(colorref))
+    _WIN_MENU_BRUSHES[colorref] = br
+    return br
+
+
+def _win_skin_visible_menus(bg_hex: str) -> None:
+    """Paint native popup chrome once per popup window (not on hover)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return
+
+    colorref = _hex_to_colorref(bg_hex)
+    brush = _win_solid_brush(colorref)
+    if not brush:
+        return
+
+    class MENUINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", wintypes.DWORD),
+            ("dwStyle", wintypes.DWORD),
+            ("cyMax", ctypes.c_uint),
+            ("hbrBack", wintypes.HBRUSH),
+            ("dwContextHelpID", wintypes.DWORD),
+            ("dwMenuData", ctypes.c_void_p),
+        ]
+
+    user32 = ctypes.windll.user32
+    uxtheme = ctypes.windll.uxtheme
+    MN_GETHMENU = 0x01E1
+    MIM_BACKGROUND = 0x00000002
+    MIM_APPLYTOSUBMENUS = 0x80000000
+    DWMWA_BORDER_COLOR = 34
+    DWMWA_CAPTION_COLOR = 35
+
+    user32.FindWindowExW.restype = wintypes.HWND
+    user32.FindWindowExW.argtypes = [
+        wintypes.HWND,
+        wintypes.HWND,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+    ]
+
+    hwnd = None
+    found: set[int] = set()
+    while True:
+        hwnd = user32.FindWindowExW(None, hwnd, "#32768", None)
+        hid = int(hwnd) if hwnd else 0
+        if not hid or hid in found:
+            break
+        found.add(hid)
+        if hid in _WIN_SKINNED_HWNDS:
+            continue
+        _WIN_SKINNED_HWNDS.add(hid)
+        try:
+            uxtheme.SetWindowTheme(hid, "", "")
+        except Exception:
+            pass
+        try:
+            hmenu = int(user32.SendMessageW(hid, MN_GETHMENU, 0, 0))
+        except Exception:
+            hmenu = 0
+        if hmenu:
+            info = MENUINFO()
+            info.cbSize = ctypes.sizeof(MENUINFO)
+            info.fMask = MIM_BACKGROUND | MIM_APPLYTOSUBMENUS
+            info.hbrBack = brush
+            try:
+                user32.SetMenuInfo(hmenu, ctypes.byref(info))
+            except Exception:
+                pass
+        try:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hid,
+                DWMWA_BORDER_COLOR,
+                ctypes.byref(ctypes.c_int(colorref)),
+                ctypes.sizeof(ctypes.c_int),
+            )
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hid,
+                DWMWA_CAPTION_COLOR,
+                ctypes.byref(ctypes.c_int(colorref)),
+                ctypes.sizeof(ctypes.c_int),
+            )
+        except Exception:
+            pass
+        try:
+            _win_fill_popup_frame(user32, hid, brush)
+        except Exception:
+            pass
+
+
+def _win_fill_popup_frame(user32, hwnd: int, brush: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    wr = wintypes.RECT()
+    cr = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(wr)):
+        return
+    if not user32.GetClientRect(hwnd, ctypes.byref(cr)):
+        return
+    pt = wintypes.POINT(cr.left, cr.top)
+    user32.ClientToScreen(hwnd, ctypes.byref(pt))
+    cl, ct = int(pt.x), int(pt.y)
+    pt2 = wintypes.POINT(cr.right, cr.bottom)
+    user32.ClientToScreen(hwnd, ctypes.byref(pt2))
+    cr_s = (cl, ct, int(pt2.x), int(pt2.y))
+    hdc = user32.GetWindowDC(hwnd)
+    if not hdc:
+        return
+    try:
+        ox, oy = int(wr.left), int(wr.top)
+        bands = (
+            (0, 0, int(wr.right) - ox, cr_s[1] - oy),
+            (0, cr_s[3] - oy, int(wr.right) - ox, int(wr.bottom) - oy),
+            (0, cr_s[1] - oy, cr_s[0] - ox, cr_s[3] - oy),
+            (cr_s[2] - ox, cr_s[1] - oy, int(wr.right) - ox, cr_s[3] - oy),
+        )
+        for left, top, right, bottom in bands:
+            if right <= left or bottom <= top:
+                continue
+            rc = wintypes.RECT(left, top, right, bottom)
+            user32.FillRect(hdc, ctypes.byref(rc), brush)
+    finally:
+        user32.ReleaseDC(hwnd, hdc)
+
+
+def _bind_win_menu_chrome(menu: tk.Menu, bg_hex: str) -> None:
+    if sys.platform != "win32":
+        return
+    if getattr(menu, "_bridge_win_menu_chrome", False):
+        return
+    menu._bridge_win_menu_chrome = True  # type: ignore[attr-defined]
+
+    def _apply(_event=None) -> None:
+        _win_skin_visible_menus(bg_hex)
+
+    try:
+        # Only skins new popup HWNDs (cascades). Already-painted windows are skipped.
+        menu.bind("<<MenuSelect>>", _apply, add="+")
+    except Exception:
+        pass
+    real_popup = menu.tk_popup
+
+    def tk_popup(*args, **kwargs):
+        _WIN_SKINNED_HWNDS.clear()
+        try:
+            menu.after(1, _apply)
+        except Exception:
+            pass
+        return real_popup(*args, **kwargs)
+
+    menu.tk_popup = tk_popup  # type: ignore[method-assign]
+
+
+def style_tk_menu(menu: tk.Menu, pal: dict[str, str]) -> None:
+    """Dark/light popup menus (right-click craft menu, set list, market)."""
+    bg2 = pal.get("bg2") or pal.get("bg") or "#2b2d31"
+    fg = pal.get("fg") or "#f2f3f5"
+    select = pal.get("select") or "#404249"
+    # Windows native Menu rejects highlight* options; one bad kw
+    # would abort the whole configure and leave the default chrome.
+    try:
+        menu.configure(
+            bg=bg2,
+            fg=fg,
+            activebackground=select,
+            activeforeground=fg,
+            disabledforeground=pal.get("muted") or "#b5bac1",
+            borderwidth=0,
+            activeborderwidth=0,
+            relief=tk.FLAT,
+            bd=0,
+            selectcolor=bg2,
+        )
+    except Exception:
+        pass
+    _bind_win_menu_chrome(menu, bg2)
+
+
+def new_themed_menu(parent: tk.Misc, *, parent_menu: tk.Menu | None = None) -> tk.Menu:
+    pal = dialog_palette(parent)
+    menu = tk.Menu(
+        parent_menu or parent,
+        tearoff=0,
+        bd=0,
+        borderwidth=0,
+        activeborderwidth=0,
+        relief=tk.FLAT,
+    )
+    style_tk_menu(menu, pal)
+    return menu
+
+
+def style_tk_text(text: tk.Text, pal: dict[str, str]) -> None:
+    fg = pal.get("fg") or "#f2f3f5"
+    try:
+        text.configure(
+            bg=pal.get("entry_bg") or "#111214",
+            fg=fg,
+            insertbackground=fg,
+            selectbackground=pal.get("select") or "#404249",
+            selectforeground=fg,
+            highlightthickness=0,
+            bd=0,
+            relief=tk.FLAT,
+        )
+    except Exception:
+        pass
+
+
 def gallery_gap(widget: tk.Misc | None) -> int:
-    """Small gutters between thumbs (surface-colored ??? blackish in dark mode)."""
+    """Small gutters between thumbs (surface-colored — blackish in dark mode)."""
     return 3
 
 
@@ -100,7 +355,7 @@ def apply_app_theme(root: tk.Misc, mode: str = "dark") -> dict[str, str]:
     except Exception:
         pass
 
-    # Clam draws 3D edges from lightcolor/darkcolor ??? force them to the surface
+    # Clam draws 3D edges from lightcolor/darkcolor — force them to the surface
     # so we never get screaming-white borders.
     edge = {
         "background": c["bg"],
@@ -143,7 +398,7 @@ def apply_app_theme(root: tk.Misc, mode: str = "dark") -> dict[str, str]:
         background=[("active", c["bg"]), ("selected", c["bg"])],
         foreground=[("active", c["fg"]), ("selected", c["fg"])],
     )
-    # Mode strip (Undone/Done/???) uses Toolbutton ??? clam defaults flash white.
+    # Mode strip (Undone/Done/…) uses Toolbutton — clam defaults flash white.
     style.configure(
         "Toolbutton",
         background=c["bg"],

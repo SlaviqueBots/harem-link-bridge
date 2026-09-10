@@ -12,6 +12,38 @@ from collections.abc import Callable
 from typing import Any
 
 
+def name_from_title_line(name: str, character_tag: str = "") -> str:
+    """Clipboard line: ``Name from Title`` (series suffix), else the display name."""
+    import re
+
+    tag = (character_tag or "").strip().replace(" ", "_")
+    shown = (name or "").strip()
+    if not tag:
+        return shown
+    m = re.match(r"^(.+?)_\((.+)\)$", tag)
+    if not m:
+        return shown or tag.replace("_", " ")
+    suffix = m.group(2).strip()
+    char = shown or m.group(1).replace("_", " ")
+    if suffix.lower() == "cosplay":
+        return f"{char} (cosplay)"
+    title = " ".join(p.capitalize() for p in suffix.replace("_", " ").split() if p)
+    return f"{char} from {title}"
+
+
+def _copy_to_clipboard(widget: tk.Misc, text: str) -> None:
+    line = (text or "").strip()
+    if not line:
+        return
+    try:
+        top = widget.winfo_toplevel()
+        top.clipboard_clear()
+        top.clipboard_append(line)
+        top.update_idletasks()
+    except Exception:
+        pass
+
+
 def mirror_char_id_from_craft(body: dict) -> int:
     """New roster row after a successful Bridge mirror craft."""
     try:
@@ -80,6 +112,8 @@ def popup_thumb_menu(
     on_open_post: Callable[[str], None],
     on_craft: Callable[[int, str], None],
     on_register_cup: Callable[[int], None] | None = None,
+    on_market_sell: Callable[[int, int], None] | None = None,
+    on_market_gift: Callable[[int, str], None] | None = None,
     on_show_checkpoint: Callable[[str], None] | None = None,
     on_edit_flavour: Callable[[int], None] | None = None,
     on_edit_note: Callable[[int], None] | None = None,
@@ -97,23 +131,78 @@ def popup_thumb_menu(
     can_cycle_name: bool = False,
     is_done: bool = False,
     extra_entries: list[tuple[str, Callable[[], None]]] | None = None,
+    character_tag: str = "",
+    copyright_tag: str = "",
+    artist_tag: str = "",
 ) -> None:
     """Show nested bridge craft menu at the pointer."""
-    menu = tk.Menu(widget, tearoff=0)
+    from link_bridge.theme import new_themed_menu
+
+    menu = new_themed_menu(widget)
 
     def craft(action_id: str) -> None:
         on_craft(int(char_id), action_id)
 
-    name = (char_name or "").strip()
-    if name:
-        label = name if len(name) <= 48 else name[:45] + "…"
-        menu.add_command(label=f"#{char_id} · {label}", state=tk.DISABLED)
-        menu.add_separator()
+    roster_label = f"#{int(char_id)}"
+    # Header in the same colors as every other entry: a disabled entry gets
+    # the muted stippled look, so use a normal entry instead (bold). Click
+    # copies the card number - handy when reporting issues.
+    try:
+        import tkinter.font as tkfont
 
+        _font_name = menu.cget("font") or "TkMenuFont"
+        _header_font = tkfont.nametofont(_font_name).copy()
+        _header_font.configure(weight="bold")
+        menu.add_command(
+            label=roster_label,
+            command=lambda: _copy_to_clipboard(widget, str(int(char_id))),
+            font=_header_font,
+        )
+    except Exception:
+        menu.add_command(
+            label=roster_label,
+            command=lambda: _copy_to_clipboard(widget, str(int(char_id))),
+        )
+
+    char_tag_clean = (character_tag or "").strip()
+    copy_tag_clean = (copyright_tag or "").strip()
+    author_tag_clean = (artist_tag or "").strip()
+
+    if char_tag_clean:
+        label = char_tag_clean if len(char_tag_clean) <= 48 else char_tag_clean[:45] + "…"
+        menu.add_command(
+            label=f"copy {label}",
+            command=lambda t=char_tag_clean: _copy_to_clipboard(widget, t),
+        )
+    else:
+        name = (char_name or "").strip()
+        if name:
+            copy_line = name_from_title_line(name, character_tag)
+            label = name if len(name) <= 48 else name[:45] + "…"
+            menu.add_command(
+                label=f"copy {label}",
+                command=lambda l=copy_line: _copy_to_clipboard(widget, l),
+            )
+
+    if copy_tag_clean:
+        label = copy_tag_clean if len(copy_tag_clean) <= 48 else copy_tag_clean[:45] + "…"
+        menu.add_command(
+            label=f"copy copyright {label}",
+            command=lambda t=copy_tag_clean: _copy_to_clipboard(widget, t),
+        )
+
+    if author_tag_clean:
+        label = author_tag_clean if len(author_tag_clean) <= 48 else author_tag_clean[:45] + "…"
+        menu.add_command(
+            label=f"copy author {label}",
+            command=lambda t=author_tag_clean: _copy_to_clipboard(widget, t),
+        )
+
+    menu.add_separator()
     menu.add_command(label="Open Omnicraft…", command=lambda: craft("omni"))
     menu.add_separator()
 
-    checkpoint = tk.Menu(menu, tearoff=0)
+    checkpoint = new_themed_menu(widget, parent_menu=menu)
     checkpoint.add_command(label="Save checkpoint", command=lambda: craft("cp"))
     if has_checkpoint:
         checkpoint.add_command(label="Load checkpoint", command=lambda: craft("ld"))
@@ -127,7 +216,7 @@ def popup_thumb_menu(
             checkpoint.add_command(label="Show checkpoint", state=tk.DISABLED)
     menu.add_cascade(label="Checkpoint", menu=checkpoint)
 
-    flavour = tk.Menu(menu, tearoff=0)
+    flavour = new_themed_menu(widget, parent_menu=menu)
     if on_edit_flavour is not None:
         flavour.add_command(
             label="Set flavour…",
@@ -138,7 +227,7 @@ def popup_thumb_menu(
     flavour.add_command(label="Remove flavour", command=lambda: craft("rfl"))
     menu.add_cascade(label="Flavour", menu=flavour)
 
-    note = tk.Menu(menu, tearoff=0)
+    note = new_themed_menu(widget, parent_menu=menu)
     if on_edit_note is not None:
         note.add_command(
             label="Set note…",
@@ -156,7 +245,7 @@ def popup_thumb_menu(
     ):
         from link_bridge.set_names import parse_set_names
 
-        set_m = tk.Menu(menu, tearoff=0)
+        set_m = new_themed_menu(widget, parent_menu=menu)
         # ``current_set`` may be multi-set encoded (unit-separator joined).
         member_names = parse_set_names(current_set)
         member_keys = {n.casefold() for n in member_names}
@@ -187,12 +276,18 @@ def popup_thumb_menu(
             )
         menu.add_cascade(label="Set", menu=set_m)
 
-    if can_tame:
-        menu.add_command(label="Mark tamed", command=lambda: craft("tm"))
-    elif is_tamed:
-        menu.add_command(label="Untame", command=lambda: craft("ut"))
+    if can_tame or is_tamed:
+        tame = new_themed_menu(widget, parent_menu=menu)
+        if can_tame:
+            tame.add_command(label="Mark as tamed", command=lambda: craft("tm"))
+        if is_tamed:
+            tame.add_command(label="Untame", command=lambda: craft("ut"))
+            tame.add_command(
+                label="Post tamed album (DM)", command=lambda: craft("td")
+            )
+        menu.add_cascade(label="Tame", menu=tame)
 
-    copy_m = tk.Menu(menu, tearoff=0)
+    copy_m = new_themed_menu(widget, parent_menu=menu)
     copy_m.add_command(label="Mirror card", command=lambda: craft("mi"))
     copy_m.add_command(
         label="Mirror card & start Omnicraft",
@@ -200,17 +295,13 @@ def popup_thumb_menu(
     )
     menu.add_cascade(label="Copy", menu=copy_m)
 
-    extra = tk.Menu(menu, tearoff=0)
+    extra = new_themed_menu(widget, parent_menu=menu)
     if can_cycle_name:
         extra.add_command(
             label="Cycle character name…",
             command=lambda: craft("cr"),
         )
-    extra.add_command(
-        label="Cycle next variant",
-        command=lambda: craft("vr_cycle"),
-    )
-    extra.add_command(label="Open Variant in Telegram DM…", command=lambda: craft("vr"))
+    extra.add_command(label="Open Variant…", command=lambda: craft("vr"))
     extra.add_command(label="Title swap…", command=lambda: craft("tswap"))
     extra.add_command(label="Open omni in bot DMs", command=lambda: craft("omni_dm"))
     menu.add_cascade(label="Extra crafts", menu=extra)
@@ -220,7 +311,7 @@ def popup_thumb_menu(
         command=lambda: craft("ud" if is_done else "dn"),
     )
 
-    status = tk.Menu(menu, tearoff=0)
+    status = new_themed_menu(widget, parent_menu=menu)
     status.add_command(label="Hide card", command=lambda: craft("hi"))
     status.add_command(label="Show card", command=lambda: craft("sh"))
     menu.add_cascade(label="Status", menu=status)
@@ -246,7 +337,7 @@ def popup_thumb_menu(
         if ok:
             craft(kind)
 
-    danger = tk.Menu(menu, tearoff=0)
+    danger = new_themed_menu(widget, parent_menu=menu)
     danger.add_command(
         label="Trash (market)…",
         command=lambda: confirm_trash("tr"),
@@ -256,6 +347,47 @@ def popup_thumb_menu(
         command=lambda: confirm_trash("ptr"),
     )
     menu.add_cascade(label="Trash", menu=danger)
+
+    if on_market_sell is not None or on_market_gift is not None:
+        # B1: sell/gift from the desktop (same MarketService path as Telegram).
+        def sell_dialog() -> None:
+            from tkinter import simpledialog
+
+            price = simpledialog.askinteger(
+                "Sell card",
+                f"Price for #{int(char_id)} (coins)?",
+                parent=widget.winfo_toplevel(),
+                minvalue=1,
+            )
+            if price and on_market_sell is not None:
+                on_market_sell(int(char_id), int(price))
+
+        def gift_dialog() -> None:
+            from tkinter import messagebox, simpledialog
+
+            top = widget.winfo_toplevel()
+            target = simpledialog.askstring(
+                "Gift card",
+                f"Gift #{int(char_id)} to (user id or @username)?",
+                parent=top,
+            )
+            if not (target or "").strip():
+                return
+            target = target.strip()
+            if messagebox.askyesno(
+                "Gift card",
+                f"Gift #{int(char_id)} to {target}?",
+                parent=top,
+            ):
+                if on_market_gift is not None:
+                    on_market_gift(int(char_id), target)
+
+        market_m = new_themed_menu(widget, parent_menu=menu)
+        if on_market_sell is not None:
+            market_m.add_command(label="Sell for price…", command=sell_dialog)
+        if on_market_gift is not None:
+            market_m.add_command(label="Gift to user…", command=gift_dialog)
+        menu.add_cascade(label="Market", menu=market_m)
 
     menu.add_separator()
     url = (post_url or "").strip()

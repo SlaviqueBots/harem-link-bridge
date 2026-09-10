@@ -10,6 +10,7 @@ from typing import Any
 import tkinter as tk
 from tkinter import ttk
 
+from link_bridge.market_links import to_int
 from link_bridge.thumb_grid import (
     COLS,
     DEFAULT_GEOMETRY,
@@ -39,6 +40,8 @@ OpenOmniUiFn = Callable[[int], None]
 PostGridFn = Callable[[int, OkCb, ErrCb], None]
 RegisterCupFn = Callable[[int, OkCb, ErrCb], None]
 DmCraftFn = Callable[[int, str, OkCb, ErrCb], None]
+MarketSellFn = Callable[[int, int, OkCb, ErrCb], None]
+MarketGiftFn = Callable[[int, str, OkCb, ErrCb], None]
 FocusPrefFn = Callable[[], bool]
 ListSetsFn = Callable[[str, OkCb, ErrCb], None]
 RenameSetFn = Callable[[str, str, OkCb, ErrCb], None]
@@ -99,6 +102,8 @@ class RosterPanel(ttk.Frame):
         post_grid: PostGridFn | None = None,
         register_cup: RegisterCupFn | None = None,
         dm_craft: DmCraftFn | None = None,
+        market_sell: MarketSellFn | None = None,
+        market_gift: MarketGiftFn | None = None,
         list_sets: ListSetsFn | None = None,
         rename_set: RenameSetFn | None = None,
         delete_set: DeleteSetFn | None = None,
@@ -133,6 +138,8 @@ class RosterPanel(ttk.Frame):
         full_image_set: Callable[[bool], None] | None = None,
         get_market_lot_geo: Callable[[], str] | None = None,
         set_market_lot_geo: Callable[[str], None] | None = None,
+        get_lot_window_state: Callable[[], str] | None = None,
+        set_lot_window_state: Callable[[str], None] | None = None,
         on_log: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(master)
@@ -142,6 +149,8 @@ class RosterPanel(ttk.Frame):
         self._post_grid = post_grid
         self._register_cup = register_cup
         self._dm_craft = dm_craft
+        self._market_sell = market_sell
+        self._market_gift = market_gift
         self._list_sets = list_sets
         self._rename_set = rename_set
         self._delete_set = delete_set
@@ -176,6 +185,8 @@ class RosterPanel(ttk.Frame):
         self._full_image_set = full_image_set or (lambda _v: None)
         self._get_market_lot_geo = get_market_lot_geo or (lambda: "")
         self._set_market_lot_geo = set_market_lot_geo
+        self._get_lot_window_state = get_lot_window_state or (lambda: "normal")
+        self._set_lot_window_state = set_lot_window_state
         self._on_log = on_log or (lambda _s: None)
         self._pending_media: dict[int, dict[str, Any]] = {}
         self._page = 0
@@ -287,6 +298,8 @@ class RosterPanel(ttk.Frame):
                 open_omni_ui=open_omni_ui,
                 register_cup=register_cup,
                 dm_craft=dm_craft,
+                market_sell=market_sell,
+                market_gift=market_gift,
                 rename_set=rename_set,
                 delete_set=delete_set,
                 avoid_set=avoid_set,
@@ -334,6 +347,8 @@ class RosterPanel(ttk.Frame):
                 open_omni_ui=open_omni_ui,
                 register_cup=register_cup,
                 dm_craft=dm_craft,
+                market_sell=market_sell,
+                market_gift=market_gift,
                 should_focus_telegram=should_focus_telegram,
                 get_post_target=self._get_post_target,
                 set_post_target=self._on_target_from_child,
@@ -360,6 +375,8 @@ class RosterPanel(ttk.Frame):
                 open_omni_ui=open_omni_ui,
                 register_cup=register_cup,
                 dm_craft=dm_craft,
+                market_sell=market_sell,
+                market_gift=market_gift,
                 should_focus_telegram=should_focus_telegram,
                 get_post_target=self._get_post_target,
                 set_post_target=self._on_target_from_child,
@@ -398,6 +415,8 @@ class RosterPanel(ttk.Frame):
                 full_image_set=self._full_image_set,
                 get_lot_window_geo=self._get_market_lot_geo,
                 set_lot_window_geo=self._set_market_lot_geo,
+                get_lot_window_state=self._get_lot_window_state,
+                set_lot_window_state=self._set_lot_window_state,
                 on_log=on_log,
             )
             self._market_panel.pack(fill=tk.BOTH, expand=True)
@@ -467,6 +486,26 @@ class RosterPanel(ttk.Frame):
                 self._primed_panel.set_scroll_speed(self._scroll_speed)
             except Exception:
                 pass
+
+    def invalidate_roster_page_cache(self, *modes: str) -> None:
+        """Drop cached roster pages so the next load hits the server."""
+        if not modes:
+            self._page_cache.clear()
+            return
+        wanted = {str(m) for m in modes}
+        for key in [k for k in list(self._page_cache) if str(k[0]) in wanted]:
+            self._page_cache.pop(key, None)
+
+    def sync_after_done_change(self, char_id: int, *, done: bool) -> None:
+        """Keep Undone/Done grids in sync after a quiet dan/undan."""
+        self.invalidate_roster_page_cache("undone", "done")
+        mode = str(self._mode or "")
+        leaving = (done and mode == "undone") or ((not done) and mode == "done")
+        entering = (done and mode == "done") or ((not done) and mode == "undone")
+        if leaving:
+            self.remove_char_from_view(int(char_id))
+        if entering:
+            self.refresh()
 
     def remove_char_from_view(self, char_id: int) -> None:
         """Pull a card out of the current page (e.g. Done while on Undone)."""
@@ -581,11 +620,18 @@ class RosterPanel(ttk.Frame):
         )
 
     def _visible_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not self._get_hide_in_any_set():
-            return list(items)
-        return [
+        # Listed cards live in the Market now, not the working roster - hide
+        # them from own views (never from other players' rosters).
+        out = [
             it
             for it in items
+            if not (it.get("listed") and self._scope == "own")
+        ]
+        if not self._get_hide_in_any_set():
+            return out
+        return [
+            it
+            for it in out
             if not str(it.get("set") or it.get("set_name") or "").strip()
         ]
 
@@ -964,7 +1010,9 @@ class RosterPanel(ttk.Frame):
         if not self._sets_body.winfo_ismapped():
             self._sets_body.pack(fill=tk.BOTH, expand=True)
         if self._sets_panel is not None:
-            self._sets_panel.refresh_sets()
+            # Keep the rendered grid on tab swaps — only load when nothing is cached.
+            if not self._sets_panel.has_cached_view():
+                self._sets_panel.refresh_sets()
 
     def _show_tamed_sub(self, which: str | None = None) -> None:
         sub = (which or self._tamed_sub_var.get() or "pairs").strip()
@@ -1002,7 +1050,9 @@ class RosterPanel(ttk.Frame):
                 if not self._primed_panel.has_cached_view():
                     self._primed_panel.load_page(0)
         elif self._tamed_panel is not None:
-            self._tamed_panel.load_page(0)
+            # Keep the rendered grid on tab swaps — only load when nothing is cached.
+            if not self._tamed_panel.has_cached_view():
+                self._tamed_panel.load_page(0)
 
     def _show_market_mode(self) -> None:
         self._roster_body.pack_forget()
@@ -1415,7 +1465,7 @@ class RosterPanel(ttk.Frame):
             ttk.Label(
                 cell, text=label_txt, wraplength=max(60, thumb), justify=tk.CENTER
             ).pack()
-            cid = int(item.get("id") or 0)
+            cid = to_int(item.get("id"))
             post_url = (item.get("post_url") or "").strip()
             self._bind_thumb(thumb_lbl, cid, post_url)
             url = (item.get("preview_url") or "").strip()
@@ -1598,6 +1648,12 @@ class RosterPanel(ttk.Frame):
             on_register_cup=self._click_register_cup
             if self._register_cup is not None
             else None,
+            on_market_sell=self._click_market_sell
+            if self._market_sell is not None
+            else None,
+            on_market_gift=self._click_market_gift
+            if self._market_gift is not None
+            else None,
             on_show_checkpoint=self._show_checkpoint_image,
             on_edit_flavour=self._edit_flavour,
             on_edit_note=self._edit_note,
@@ -1606,6 +1662,9 @@ class RosterPanel(ttk.Frame):
             has_checkpoint=bool(item.get("has_checkpoint")),
             checkpoint_image_url=str(item.get("checkpoint_image_url") or ""),
             char_name=name,
+            character_tag=str(item.get("character_tag") or item.get("canonical_tag") or ""),
+            copyright_tag=str(item.get("copyright_tag") or ""),
+            artist_tag=str(item.get("artist_tag") or ""),
             set_names=self._own_set_names(),
             current_set=str(item.get("set") or ""),
             on_add_to_set=self._add_to_set,
@@ -1699,11 +1758,17 @@ class RosterPanel(ttk.Frame):
                 self.meta_var.set(f"#{char_id}: {notice}")
                 self._on_log(f"Craft {action_id} char {char_id}: {notice}")
                 if open_omni_after_mirror and self._open_omni_ui is not None:
-                    from link_bridge.thumb_menu import mirror_char_id_from_craft
+                    # Original stays craftable; the new row is a frozen Done copy.
+                    self._open_omni_ui(int(char_id))
+                    mid = 0
+                    try:
+                        from link_bridge.thumb_menu import mirror_char_id_from_craft
 
-                    mirror_id = mirror_char_id_from_craft(body)
-                    if mirror_id > 0:
-                        self._open_omni_ui(mirror_id)
+                        mid = mirror_char_id_from_craft(body)
+                    except Exception:
+                        mid = 0
+                    if mid > 0:
+                        self._on_log(f"Mirrored copy #{mid} (omni stays on #{char_id})")
                 if silent:
                     from link_bridge.thumb_menu import apply_silent_craft_item
 
@@ -1714,10 +1779,14 @@ class RosterPanel(ttk.Frame):
                             self.remove_char_from_view(int(char_id))
                     if action_id in ("tr", "ptr"):
                         self.remove_char_from_view(int(char_id))
-                    elif action_id == "dn" and self._mode == "undone":
-                        self.remove_char_from_view(int(char_id))
-                    elif action_id == "ud" and self._mode == "done":
-                        self.remove_char_from_view(int(char_id))
+                    elif action_id in ("dn", "ud"):
+                        self.sync_after_done_change(
+                            int(char_id), done=(action_id == "dn")
+                        )
+                    elif action_id == "mi":
+                        self.invalidate_roster_page_cache("undone", "done")
+                        if self._mode in ("undone", "done"):
+                            self.refresh()
                 elif self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram
@@ -1739,7 +1808,11 @@ class RosterPanel(ttk.Frame):
         self._dm_craft(int(char_id), str(action_id), on_ok, on_err)
 
     def _click_register_cup(self, char_id: int) -> None:
-        if char_id <= 0 or self._busy or self._register_cup is None:
+        if char_id <= 0 or self._register_cup is None:
+            return
+        if self._busy:
+            # A19: a tap during a craft looked broken, not busy.
+            self.meta_var.set("Busy - try again in a moment…")
             return
         self._busy = True
         self.meta_var.set(f"Registering #{char_id} for daily cup…")
@@ -1771,6 +1844,62 @@ class RosterPanel(ttk.Frame):
             self._set_nav(True)
 
         self._register_cup(int(char_id), on_ok, on_err)
+
+    def _click_market_sell(self, char_id: int, price: int) -> None:
+        # B1: desktop sell (same path as Telegram sell).
+        if char_id <= 0 or price <= 0 or self._busy or self._market_sell is None:
+            return
+        self._busy = True
+        self.meta_var.set(f"Listing #{char_id} for {price}…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "market_sell_ok":
+                lid = body.get("listing_id") or "?"
+                self.meta_var.set(f"#{char_id} listed for {price} (lot #{lid})")
+                self._on_log(f"Market sell ok char={char_id} price={price} lot={lid}")
+                self.refresh()
+            else:
+                err = body.get("error") or "failed"
+                self.meta_var.set(f"Sell failed: {err}")
+                self._on_log(f"Market sell err: {err}")
+            self._set_nav(True)
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Sell failed: {exc}")
+            self._on_log(f"Market sell failed: {exc}")
+            self._set_nav(True)
+
+        self._market_sell(int(char_id), int(price), on_ok, on_err)
+
+    def _click_market_gift(self, char_id: int, target: str) -> None:
+        # B1: desktop gift (same path as Telegram gift).
+        if char_id <= 0 or not (target or "").strip() or self._busy or self._market_gift is None:
+            return
+        target = target.strip()
+        self._busy = True
+        self.meta_var.set(f"Gifting #{char_id} to {target}…")
+
+        def on_ok(body: dict) -> None:
+            self._busy = False
+            if body.get("op") == "market_gift_ok":
+                self.meta_var.set(f"#{char_id} gifted to {target}")
+                self._on_log(f"Market gift ok char={char_id} to={target}")
+                self.remove_char_from_view(int(char_id))
+            else:
+                err = body.get("error") or "failed"
+                self.meta_var.set(f"Gift failed: {err}")
+                self._on_log(f"Market gift err: {err}")
+            self._set_nav(True)
+
+        def on_err(exc: BaseException) -> None:
+            self._busy = False
+            self.meta_var.set(f"Gift failed: {exc}")
+            self._on_log(f"Market gift failed: {exc}")
+            self._set_nav(True)
+
+        self._market_gift(int(char_id), target, on_ok, on_err)
 
     def _click_primary(self, char_id: int) -> None:
         if (

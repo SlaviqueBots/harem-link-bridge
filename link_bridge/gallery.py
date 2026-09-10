@@ -1,4 +1,4 @@
-"""Justified photo gallery ??? tight rows that fill width (Telegram-like)."""
+"""Justified photo gallery — tight rows that fill width (Telegram-like)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 from tkinter import ttk
 
+from link_bridge.market_links import to_int
 from link_bridge.thumb_grid import (
     decode_thumb_sized,
     peek_aspect,
@@ -46,6 +47,30 @@ def ready_layout_width(canvas_w: int, parent_w: int = 0) -> int | None:
 def _clamp_aspect(raw: float) -> float:
     a = float(raw) if raw and raw > 0.05 else 1.0
     return max(0.2, min(a, 4.0))
+
+
+def entries_need_decode(entries: list[dict[str, Any]]) -> bool:
+    """True when a tile holds bytes but no photo (a decode pass is required).
+
+    Layout signatures track geometry + aspects only, so bytes landing on an
+    aspect-neutral tile (e.g. a true 1.0 over the 1.0 default) change nothing
+    in the signature — without this check the tile sits on "…" forever, and
+    refresh/tab-switch/page-nav all preserve the stuck state.
+    """
+    for e in entries:
+        if e.get("data") is not None and e.get("photo") is None:
+            return True
+    return False
+
+
+def pair_entries_need_decode(entries: list[dict[str, Any]]) -> bool:
+    """Same as above for PairGallery before/after sides."""
+    for e in entries:
+        if e.get("before_data") is not None and e.get("before_photo") is None:
+            return True
+        if e.get("after_data") is not None and e.get("after_photo") is None:
+            return True
+    return False
 
 
 def dense_order(
@@ -115,7 +140,7 @@ def justify_layout(
     """Pack images into full-width rows.
 
     Non-last rows always fill the container width by scaling shared row height
-    (aspect preserved ??? this is not the old per-tile stretch bug). Only a short
+    (aspect preserved — this is not the old per-tile stretch bug). Only a short
     last row may leave blank space on the right.
     """
     width = max(80, int(container_width))
@@ -209,7 +234,7 @@ def target_row_height(
 
 BindThumbFn = Callable[[tk.Label, int, str], None]
 
-# Shared wheel handler ??? dual Done/Undone panes must not steal bind_all from each other.
+# Shared wheel handler — dual Done/Undone panes must not steal bind_all from each other.
 _wheel_target: "JustifiedGallery | PairGallery | None" = None
 
 # Smooth wheel: pixels per notch at scroll_speed=1.0, then eased toward rest.
@@ -230,14 +255,14 @@ def _gallery_wheel(event) -> None:
     delta = getattr(event, "delta", 0) or 0
     if not delta:
         return
-    # Windows: ??120 per notch. Keep sign: positive delta = scroll up = negative y.
+    # Windows: ±120 per notch. Keep sign: positive delta = scroll up = negative y.
     notches = float(delta) / 120.0
     speed = max(0.25, min(6.0, float(getattr(g, "_scroll_speed", 3.0) or 3.0)))
     px = -notches * _WHEEL_PX_PER_NOTCH * speed
     g._queue_smooth_scroll(px)
 
 
-# Debounce while thumbs trickle in ??? each layout can re-decode many tiles.
+# Debounce while thumbs trickle in — each layout can re-decode many tiles.
 _LAYOUT_DEBOUNCE_MS = 160
 _DECODE_BUDGET = 48  # max PhotoImage rebuilds per layout tick (keeps UI alive)
 
@@ -471,12 +496,12 @@ class JustifiedGallery:
         self._entries = []
         self._last_sig = None
         for item in items:
-            cid = int(item.get("id") or 0)
+            cid = to_int(item.get("id"))
             post_url = (item.get("post_url") or "").strip()
             url = (item.get("preview_url") or "").strip()
             lbl = tk.Label(
                 inner,
-                text="???",
+                text="…",
                 relief=tk.FLAT,
                 cursor="hand2",
                 bd=0,
@@ -601,7 +626,7 @@ class JustifiedGallery:
         if item is not None:
             hit["item"] = item
         try:
-            hit["label"].configure(image="", text="???")
+            hit["label"].configure(image="", text="…")
             self._bind_thumb(
                 hit["label"],
                 cid,
@@ -620,7 +645,7 @@ class JustifiedGallery:
             return
         entry["data"] = data
         url = entry.get("url") or ""
-        # Restore normal click after a ?? ??? retry cycle.
+        # Restore normal click after a × … retry cycle.
         try:
             self._bind_thumb(
                 entry["label"],
@@ -670,7 +695,7 @@ class JustifiedGallery:
                 if gen != self._stamp or not entry["label"].winfo_exists():
                     return
                 if nxt < 3:
-                    entry["label"].configure(text="???")
+                    entry["label"].configure(text="…")
                     delay = 700 * nxt
                     try:
                         entry["label"].after(
@@ -679,8 +704,8 @@ class JustifiedGallery:
                     except Exception:
                         pass
                     return
-                entry["label"].configure(text="??")
-                # Click ?? to try again.
+                entry["label"].configure(text="×")
+                # Click × to try again.
                 entry["label"].bind(
                     "<Button-1>",
                     lambda _e, e=entry, g=gen: self._retry_fetch(e, g),
@@ -698,7 +723,7 @@ class JustifiedGallery:
         if gen != self._stamp or not entry["label"].winfo_exists():
             return
         entry["fetch_attempts"] = 0
-        entry["label"].configure(text="???", image="")
+        entry["label"].configure(text="…", image="")
         self._fetch(entry, gen)
 
     def _schedule_layout(self, *, immediate: bool = False) -> None:
@@ -737,7 +762,7 @@ class JustifiedGallery:
         aspects = [float(e.get("aspect") or 1.0) for e in self._entries]
         # Round aspects so tiny EXIF noise doesn't force a full reshuffle.
         sig = (view_w, target, round(self._preview_scale, 2), tuple(round(a, 2) for a in aspects))
-        if sig == self._last_sig and not self._decode_queue:
+        if sig == self._last_sig and not self._decode_queue and not entries_need_decode(self._entries):
             return
 
         self._in_layout = True
@@ -794,7 +819,7 @@ class JustifiedGallery:
                                     pass
                         except Exception as exc:
                             logger.debug("natural decode failed: %s", exc)
-                            lbl.configure(text="??")
+                            lbl.configure(text="×")
                 entry["box"] = box
                 lbl.place(x=x, y=y, width=bw, height=bh)
             self._canvas.configure(scrollregion=(0, 0, view_w, max(total_h, 1)))
@@ -803,7 +828,7 @@ class JustifiedGallery:
             self._in_layout = False
 
         if self._decode_queue and self._canvas is not None:
-            # Keep UI responsive ??? finish remaining resizes on later ticks.
+            # Keep UI responsive — finish remaining resizes on later ticks.
             self._layout_after = self._canvas.after(1, self._flush_decodes)
 
     def _flush_decodes(self) -> None:
@@ -1066,7 +1091,7 @@ class PairGallery:
         surf = self._surface().get("canvas", "#1e1f22")
         muted = self._surface().get("muted", "#b5bac1")
         for item in items:
-            cid = int(item.get("id") or 0)
+            cid = to_int(item.get("id"))
             post_url = (item.get("post_url") or "").strip()
             before_url = (
                 (item.get("before_preview_url") or "").strip()
@@ -1079,7 +1104,7 @@ class PairGallery:
             cell = tk.Frame(inner, bd=0, highlightthickness=0, bg=surf)
             before_lbl = tk.Label(
                 cell,
-                text="???",
+                text="…",
                 relief=tk.FLAT,
                 cursor="hand2",
                 bd=0,
@@ -1089,7 +1114,7 @@ class PairGallery:
             )
             after_lbl = tk.Label(
                 cell,
-                text="???",
+                text="…",
                 relief=tk.FLAT,
                 cursor="hand2",
                 bd=0,
@@ -1191,7 +1216,7 @@ class PairGallery:
                 if gen != self._gen_fn() or not lbl.winfo_exists():
                     return
                 if nxt < 3:
-                    lbl.configure(text="???")
+                    lbl.configure(text="…")
                     try:
                         lbl.after(
                             700 * nxt,
@@ -1200,7 +1225,7 @@ class PairGallery:
                     except Exception:
                         pass
                     return
-                lbl.configure(text="??")
+                lbl.configure(text="×")
 
             try:
                 lbl.after(0, fail_or_retry)
@@ -1238,7 +1263,7 @@ class PairGallery:
             round(self._preview_scale, 2),
             tuple(round(a, 2) for a in aspects),
         )
-        if sig == self._last_sig and not self._decode_queue:
+        if sig == self._last_sig and not self._decode_queue and not pair_entries_need_decode(self._entries):
             return
 
         self._in_layout = True
@@ -1303,7 +1328,7 @@ class PairGallery:
                                         pass
                             except Exception as exc:
                                 logger.debug("pair decode failed: %s", exc)
-                                lbl.configure(text="??")
+                                lbl.configure(text="×")
                     lbl.place(x=ox, y=0, width=sw, height=bh)
                 entry["box"] = box
                 cell.place(x=x, y=y, width=bw, height=bh)
