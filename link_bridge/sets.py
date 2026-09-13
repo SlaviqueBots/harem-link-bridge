@@ -636,24 +636,25 @@ class SetsPanel(ttk.Frame):
         rename(old, new, on_ok, on_err)
 
     def _menu_set_names(self) -> list[str]:
+        # Own sets only — never fall back to the browsing list, which may
+        # hold another player's sets (sets are player-bound).
         if self._get_set_names is not None:
-            names = list(self._get_set_names())
-            if names:
-                return names
-        return list(self._names)
+            return [n for n in (list(self._get_set_names()) or []) if str(n).strip()]
+        return []
 
     def _note_set_used(self, name: str) -> None:
         n = " ".join((name or "").split())
         if not n:
             return
         key = n.casefold()
-        if not any(x.casefold() == key for x in self._names):
-            self._names.append(n)
-            self._names.sort(key=str.casefold)
-            self._list.delete(0, tk.END)
-            for nm in self._names:
-                self._list.insert(tk.END, nm)
-            self._sync_rename_button()
+        if not self._whose:
+            if not any(x.casefold() == key for x in self._names):
+                self._names.append(n)
+                self._names.sort(key=str.casefold)
+                self._list.delete(0, tk.END)
+                for nm in self._names:
+                    self._list.insert(tk.END, nm)
+                self._sync_rename_button()
         if self._on_set_names is not None:
             cached = list(self._get_set_names()) if self._get_set_names else list(self._names)
             if not any(x.casefold() == key for x in cached):

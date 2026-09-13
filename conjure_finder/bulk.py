@@ -34,6 +34,7 @@ from conjure_finder.engine import (
     _merge_priced,
     _option_rank_key,
     _progress,
+    _start_client,
 )
 from conjure_finder.urls import ParsedPostUrl, flatten_wishlist_urls, parse_post_url
 
@@ -387,7 +388,7 @@ async def find_bulk_paths(
         from bot.services.danbooru import DanbooruClient
 
         shared_db = DanbooruClient()
-        await shared_db.start()
+        await _start_client(shared_db, label="Danbooru")
     try:
         for i, p in enumerate(uniq, 1):
             if _cancelled(cancel_check):

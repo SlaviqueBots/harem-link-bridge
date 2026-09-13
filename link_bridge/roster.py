@@ -756,9 +756,13 @@ class RosterPanel(ttk.Frame):
             return
         self._set_names.append(n)
 
-    def _prefetch_set_names(self) -> None:
-        if self._list_sets is None or self._set_names_loaded:
+    def _prefetch_set_names(self, *, force: bool = False) -> None:
+        if self._list_sets is None:
             return
+        if self._set_names_loaded and not force:
+            return
+        if force:
+            self._set_names_loaded = False
 
         def on_ok(body: dict) -> None:
             if body.get("op") == "sets_list_ok":
@@ -1145,6 +1149,9 @@ class RosterPanel(ttk.Frame):
             return
         self._query = (self.search_var.get() or "").strip()
         # Bust page cache so Refresh actually picks up new preview URLs.
+        # Also refetch set names so sets created in the bot appear in the
+        # right-click Set menu without a full client restart.
+        self._prefetch_set_names(force=True)
         mode = self._roster_mode_key()
         cache_key = (mode, (self._query or "").strip().lower(), int(self._page))
         self._page_cache.pop(cache_key, None)

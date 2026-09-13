@@ -348,6 +348,35 @@ def _danbooru_preview_url(raw: dict) -> str:
     return preview or large or file_url or ""
 
 
+def _is_cert_missing_error(exc: BaseException) -> bool:
+    """True if ``exc`` is a missing CA-bundle file (stale SSL_CERT_FILE, etc.).
+
+    httpx reads SSL_CERT_FILE at AsyncClient() creation, so this surfaces
+    before any request — outside the GET retry wrapper below.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return True
+    return getattr(exc, "errno", None) == 2 and "No such file" in str(exc)
+
+
+def _cert_missing_error(label: str, exc: BaseException) -> ValueError:
+    return ValueError(
+        f"{label}: HTTPS CA certificate file missing "
+        f"({exc}). Update Harem Link Bridge, or clear SSL_CERT_FILE "
+        "in your system environment and retry."
+    )
+
+
+async def _start_client(client, *, label: str) -> None:
+    """Start a booru API client, translating missing-CA errors into a hint."""
+    try:
+        await client.start()
+    except OSError as exc:
+        if _is_cert_missing_error(exc):
+            raise _cert_missing_error(label, exc) from exc
+        raise
+
+
 async def _httpx_get_retry(
     client,
     path: str,
@@ -372,11 +401,7 @@ async def _httpx_get_retry(
             r = await client.get(path, timeout=timeout)
         except FileNotFoundError as exc:
             # Usually a broken SSL_CERT_FILE / missing certifi cacert.pem.
-            raise ValueError(
-                f"{label or path}: HTTPS CA certificate file missing "
-                f"({exc}). Update Harem Link Bridge, or clear SSL_CERT_FILE "
-                "in your system environment and retry."
-            ) from exc
+            raise _cert_missing_error(label or path, exc) from exc
         except (
             httpx.ConnectError,
             httpx.ConnectTimeout,
@@ -386,14 +411,8 @@ async def _httpx_get_retry(
             httpx.PoolTimeout,
             OSError,
         ) as exc:
-            if isinstance(exc, FileNotFoundError) or (
-                getattr(exc, "errno", None) == 2
-                and "No such file" in str(exc)
-            ):
-                raise ValueError(
-                    f"{label or path}: HTTPS CA certificate file missing "
-                    f"({exc}). Update Harem Link Bridge and retry."
-                ) from exc
+            if _is_cert_missing_error(exc):
+                raise _cert_missing_error(label or path, exc) from exc
             last = exc
             if attempt >= attempts:
                 break
@@ -450,7 +469,7 @@ async def _load_danbooru_tags(
     own_client = client is None
     if own_client:
         client = DanbooruClient()
-        await client.start()
+        await _start_client(client, label=f"Danbooru #{post_id}")
     # B7: DEV Conjure runs against this repo's bot helpers - if a Koara pull
     # drops tag_info_many, say so plainly instead of AttributeError mid-run.
     if not hasattr(client, "tag_info_many"):
@@ -578,7 +597,7 @@ async def _load_rule34_tags(
 
     warnings: list[str] = []
     client = Rule34Client()
-    await client.start()
+    await _start_client(client, label=f"Rule34 #{post_id}")
     # B7: same version guard as Danbooru above (missing tag_index_row).
     if not hasattr(client, "tag_index_row"):
         raise ValueError(
@@ -990,12 +1009,12 @@ class _CountSession:
             from bot.services.danbooru import DanbooruClient
 
             self._danbooru = DanbooruClient()
-            await self._danbooru.start()
+            await _start_client(self._danbooru, label="Danbooru")
         else:
             from bot.services.rule34 import Rule34Client
 
             self._rule34 = Rule34Client()
-            await self._rule34.start()
+            await _start_client(self._rule34, label="Rule34")
 
     async def aclose(self) -> None:
         if self._danbooru:
