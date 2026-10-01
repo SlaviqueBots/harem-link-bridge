@@ -728,6 +728,7 @@ class OmniPanel(ttk.Frame):
         seed_panel: OmniPanel | None = None,
         on_host_status: Callable[[str], None] | None = None,
         on_balance: Callable[[dict[str, Any]], None] | None = None,
+        on_mirror: Callable[[int, int], None] | None = None,
     ) -> None:
         super().__init__(master, style="Omni.TFrame")
         self._char_id = int(char_id)
@@ -754,6 +755,7 @@ class OmniPanel(ttk.Frame):
         self._seed_panel = seed_panel
         self._set_host_status = on_host_status or (lambda _s: None)
         self._on_balance = on_balance
+        self._on_mirror = on_mirror
         self._last_status = "Loading…"
         self._busy = False
         self._busy_gen = 0
@@ -1475,7 +1477,18 @@ class OmniPanel(ttk.Frame):
         ):
             self.after(80, lambda: self._on_wip_next(self._char_id))
 
-    def _flash_center_notice(self, title: str, sub: str = "") -> None:
+    def _flash_center_notice(
+        self,
+        title: str,
+        sub: str = "",
+        *,
+        bg: str = "#0d6b38",
+        fg: str = "#ffffff",
+        border: str = "#9dffc4",
+        sub_fg: str = "#d7ffe8",
+        font_size: int = 36,
+        ms: int = 3200,
+    ) -> None:
         try:
             old = getattr(self, "_notice", None)
             if old is not None:
@@ -1484,25 +1497,25 @@ class OmniPanel(ttk.Frame):
             pass
         wrap = tk.Frame(
             self._left,
-            bg="#0d6b38",
+            bg=bg,
             highlightthickness=5,
-            highlightbackground="#9dffc4",
+            highlightbackground=border,
         )
         title_pady = (22, 6) if sub else (28, 28)
         tk.Label(
             wrap,
             text=title,
-            font=("Segoe UI", 36, "bold"),
-            bg="#0d6b38",
-            fg="#ffffff",
+            font=("Segoe UI", int(font_size), "bold"),
+            bg=bg,
+            fg=fg,
         ).pack(padx=48, pady=title_pady)
         if sub:
             tk.Label(
                 wrap,
                 text=sub,
                 font=("Segoe UI", 13),
-                bg="#0d6b38",
-                fg="#d7ffe8",
+                bg=bg,
+                fg=sub_fg,
             ).pack(pady=(0, 18))
         wrap.place(relx=0.5, rely=0.48, anchor="center")
         self._notice = wrap
@@ -1517,7 +1530,7 @@ class OmniPanel(ttk.Frame):
             if getattr(self, "_notice", None) is wrap:
                 self._notice = None
 
-        self.after(3200, _drop)
+        self.after(int(ms), _drop)
 
     def _raise_overlay(self) -> None:
         notice = getattr(self, "_notice", None)
@@ -2169,13 +2182,34 @@ class OmniPanel(ttk.Frame):
                 if op == "mi":
                     self._stop_progress(done=False)
                     detail = str(body.get("detail") or "")
+                    mid = 0
                     sub = ""
                     if detail.startswith("mirror:"):
                         try:
-                            sub = f"→ #{int(detail.split(':', 1)[1])}"
+                            mid = int(detail.split(":", 1)[1])
+                            sub = f"→ #{mid}"
                         except (ValueError, IndexError):
-                            pass
+                            mid = 0
                     self._flash_center_notice("MIRRORED", sub)
+                    self.after(80, self._raise_overlay)
+                    self.after(300, self._raise_overlay)
+                    if mid > 0 and self._on_mirror is not None:
+                        try:
+                            self._on_mirror(int(self._char_id), mid)
+                        except Exception:
+                            pass
+                elif body.get("loop_restarted"):
+                    # Full reshape loop seen — pity memory reset, starting over.
+                    self._stop_progress(done=False)
+                    self._flash_center_notice(
+                        "LOOP COMPLETE",
+                        "all images seen — reshuffle, starting over",
+                        bg="#5b2a86",
+                        border="#d9b8ff",
+                        sub_fg="#e9d5ff",
+                        font_size=44,
+                        ms=8000,
+                    )
                     self.after(80, self._raise_overlay)
                     self.after(300, self._raise_overlay)
                 acquired = self._media_url(body) != prev_before and (
@@ -2369,6 +2403,7 @@ class OmniHost(tk.Toplevel):
         get_flavour: FlavourGetFn | None = None,
         on_silent_craft: SilentCraftFn | None = None,
         on_balance: Callable[[dict[str, Any]], None] | None = None,
+        on_mirror: Callable[[int, int], None] | None = None,
     ) -> None:
         super().__init__(master)
         self.title("Omnicraft")
@@ -2406,6 +2441,7 @@ class OmniHost(tk.Toplevel):
         self._get_flavour = get_flavour
         self._on_silent_craft = on_silent_craft
         self._on_balance_external = on_balance
+        self._on_mirror = on_mirror
         self._capturing_repeat = False
         self._omni_keypress = self._on_omni_key
         self._tabs: dict[tuple[int, str], tuple[ttk.Frame, OmniPanel]] = {}
@@ -2802,7 +2838,13 @@ class OmniHost(tk.Toplevel):
                 self._show_tab(key)
                 return
 
-    def open_card(self, char_id: int, *, mode: str = "omni") -> None:
+    def open_card(
+        self,
+        char_id: int,
+        *,
+        mode: str = "omni",
+        notice: tuple[str, str] | None = None,
+    ) -> None:
         mode = "refine" if mode == "refine" else "omni"
         key = (int(char_id), mode)
         existing = self._tabs.get(key)
@@ -2818,6 +2860,11 @@ class OmniHost(tk.Toplevel):
                     panel.reload()
             self.lift()
             self.focus_force()
+            if notice is not None:
+                try:
+                    panel._flash_center_notice(notice[0], notice[1])
+                except Exception:
+                    pass
             return
 
         tab = ttk.Frame(self._body, style="Omni.TFrame")
@@ -2850,6 +2897,7 @@ class OmniHost(tk.Toplevel):
             get_flavour=self._get_flavour,
             on_silent_craft=self._on_silent_craft,
             on_balance=self._notify_balance,
+            on_mirror=self._on_mirror,
             seed_panel=seed_panel,
             on_host_status=lambda s: self._host_status_var.set(s),
         )
@@ -2860,6 +2908,11 @@ class OmniHost(tk.Toplevel):
         self._show_tab(key)
         self.lift()
         self.focus_force()
+        if notice is not None:
+            try:
+                panel._flash_center_notice(notice[0], notice[1])
+            except Exception:
+                pass
 
     def _refresh_plan_rails(self, char_id: int) -> None:
         cid = int(char_id)

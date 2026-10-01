@@ -192,6 +192,12 @@ class MarketPanel(ttk.Frame):
             command=self._sync_hide_mode_style,
         )
         self._hide_mode_btn.pack(side=tk.LEFT, padx=(8, 0))
+        self._lmb_viewer = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            filt,
+            text="LMB → Viewer",
+            variable=self._lmb_viewer,
+        ).pack(side=tk.LEFT, padx=(8, 0))
 
         self._scroll_host = ttk.Frame(self)
         self._scroll_host.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
@@ -226,7 +232,6 @@ class MarketPanel(ttk.Frame):
                 self._hide_mode_btn.configure(style="TCheckbutton")
         except Exception:
             pass
-
     def set_grid_view(self, enabled: bool) -> None:
         flag = bool(enabled)
         if flag == self._grid_view_flag:
@@ -242,6 +247,7 @@ class MarketPanel(ttk.Frame):
         return (
             (item.get("preview_url") or "").strip()
             or (item.get("image_url") or "").strip()
+            or (item.get("file_url") or "").strip()
         )
 
     def _persist_prices(self) -> None:
@@ -922,24 +928,46 @@ class MarketPanel(ttk.Frame):
         item: dict[str, Any],
     ) -> None:
         thumb = self._thumb
+        # Dead preview endpoints (soy 449s, rotted samples) fall through to
+        # the next URL instead of a stuck "no preview" tile.
+        ordered: list[str] = []
+        for u in [url] + [
+            (item.get(k) or "").strip()
+            for k in ("preview_url", "image_url", "file_url")
+        ]:
+            u = (u or "").strip()
+            if u.startswith("http") and u not in ordered:
+                ordered.append(u)
 
-        def apply_bytes(data: bytes) -> None:
+        def try_at(i: int) -> None:
             if gen != self._gen or not label.winfo_exists():
                 return
-            try:
-                photo = decode_thumb(data, thumb, natural=False)
-                self._photos.append(photo)
-                label.configure(image=photo, text="")
-                self._bind_thumb(label, item)
-            except Exception:
+
+            def apply_bytes(data: bytes) -> None:
+                if gen != self._gen or not label.winfo_exists():
+                    return
+                try:
+                    photo = decode_thumb(data, thumb, natural=False)
+                    self._photos.append(photo)
+                    label.configure(image=photo, text="")
+                    self._bind_thumb(label, item)
+                except Exception:
+                    label.configure(text="no preview")
+
+            def on_fail(_exc: BaseException) -> None:
+                if gen != self._gen or not label.winfo_exists():
+                    return
+                if i + 1 < len(ordered):
+                    try_at(i + 1)
+                    return
                 label.configure(text="no preview")
 
-        def on_fail(_exc: BaseException) -> None:
-            if gen != self._gen or not label.winfo_exists():
-                return
-            label.configure(text="no preview")
+            schedule_thumb_fetch(ordered[i], on_data=apply_bytes, on_err=on_fail)
 
-        schedule_thumb_fetch(url, on_data=apply_bytes, on_err=on_fail)
+        if ordered:
+            try_at(0)
+        else:
+            label.configure(text="no preview")
 
     def _gallery_bind_thumb(
         self, label: tk.Label, char_id: int, post_url: str
@@ -972,7 +1000,48 @@ class MarketPanel(ttk.Frame):
             if lid > 0:
                 self._toggle_hide_lot(lid)
             return
+        if self._lmb_viewer.get():
+            self._open_full_image(item)
+            return
         self._open_lot_window(item)
+
+    def _full_url_for_item(self, item: dict[str, Any]) -> str:
+        file_u = (item.get("file_url") or "").strip()
+        img_u = (item.get("image_url") or "").strip()
+        prev_u = (item.get("preview_url") or "").strip()
+        try:
+            prefer = bool(self._prefer_original())
+        except Exception:
+            prefer = True
+        if prefer:
+            return file_u or img_u or prev_u
+        return img_u or file_u or prev_u
+
+    def _open_full_image(self, item: dict[str, Any]) -> None:
+        from link_bridge.open_image import open_full_image
+
+        url = self._full_url_for_item(item)
+        lid = to_int(item.get("listing_id"))
+        if not url:
+            self.meta_var.set(f"No image URL for lot {lid}")
+            return
+        self.meta_var.set(f"Opening lot {lid} image…")
+        fallbacks = [
+            u
+            for u in (
+                (item.get("image_url") or "").strip(),
+                (item.get("preview_url") or "").strip(),
+            )
+            if u and u != url
+        ]
+
+        def on_err(exc: BaseException) -> None:
+            self.after(
+                0,
+                lambda: self.meta_var.set(f"Open image failed: {exc}"),
+            )
+
+        open_full_image(url, fallback_urls=fallbacks, on_err=on_err)
 
     def _popup_thumb_menu(self, event, item: dict[str, Any]) -> None:
         from link_bridge.market_hidden import is_hidden
@@ -995,6 +1064,10 @@ class MarketPanel(ttk.Frame):
         menu.add_command(
             label="Open lot…",
             command=lambda: self._open_lot_window(item),
+        )
+        menu.add_command(
+            label="Open image…",
+            command=lambda: self._open_full_image(item),
         )
         if buyable:
             buy_label = f"Buy for {price}🐷"

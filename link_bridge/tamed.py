@@ -1000,7 +1000,16 @@ class TamedPanel(ttk.Frame):
                 notice = detail if detail and detail != "ok" else f"{label} ✓"
                 self.meta_var.set(f"#{char_id}: {notice}")
                 if open_omni_after_mirror and self._open_omni_ui is not None:
-                    self._open_omni_ui(int(char_id))
+                    from link_bridge.thumb_menu import mirror_char_id_from_craft
+
+                    try:
+                        mid = mirror_char_id_from_craft(body)
+                    except Exception:
+                        mid = 0
+                    self._open_omni_ui(
+                        int(char_id),
+                        notice=(("MIRRORED", f"→ #{mid}") if mid > 0 else None),
+                    )
                 if silent:
                     from link_bridge.thumb_menu import apply_silent_craft_item
 

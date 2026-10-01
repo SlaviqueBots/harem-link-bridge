@@ -1889,7 +1889,12 @@ class LinkBridgeApp(tk.Tk):
         """Post plain max-res card into bot DMs (checkres-style, no omni keyboard)."""
         self._roster_dm_craft(int(char_id), "card", on_ok, on_err)
 
-    def _open_omni_ui(self, char_id: int, mode: str = "omni") -> None:
+    def _open_omni_ui(
+        self,
+        char_id: int,
+        mode: str = "omni",
+        notice: tuple[str, str] | None = None,
+    ) -> None:
         from link_bridge.omni import OmniHost
 
         host = getattr(self, "_omni_host", None)
@@ -1922,6 +1927,7 @@ class LinkBridgeApp(tk.Tk):
                 get_flavour=self._omni_flavour_for,
                 on_silent_craft=self._on_omni_silent_craft,
                 on_balance=self._sync_roster_balance_from_omni,
+                on_mirror=self._on_omni_mirror,
             )
             self._omni_host = host
             if hasattr(self, "_balance_chip"):
@@ -1943,7 +1949,7 @@ class LinkBridgeApp(tk.Tk):
                 self._omni_host = None
 
             host.bind("<Destroy>", _drop)
-        host.open_card(int(char_id), mode=mode)
+        host.open_card(int(char_id), mode=mode, notice=notice)
 
     def _omni_fetch_undone(self, on_ok, on_err, *, exclude_id: int = 0) -> None:
         from link_bridge.roster import PAGE_SIZE
@@ -2001,6 +2007,14 @@ class LinkBridgeApp(tk.Tk):
             self._roster.apply_silent_craft(int(char_id), str(craft or ""))
         except Exception:
             logger.debug("omni silent craft sync failed", exc_info=True)
+
+    def _on_omni_mirror(self, char_id: int, mirror_id: int) -> None:
+        if self._roster is None:
+            return
+        try:
+            self._roster._insert_mirror_row(int(mirror_id), int(char_id))
+        except Exception:
+            logger.debug("omni mirror sync failed", exc_info=True)
 
     def _set_omni_beep(self, flag: bool) -> None:
         self.cfg.omni_beep = bool(flag)

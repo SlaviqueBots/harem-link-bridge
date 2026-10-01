@@ -139,7 +139,12 @@ def release_photos(photos: list[Any]) -> None:
 
 
 def open_rgb(data: bytes):
-    """Decode image bytes with EXIF orientation applied."""
+    """Decode image bytes with EXIF orientation applied.
+
+    Transparency composites onto white — a bare convert("RGB") drops
+    alpha to black and transparent PNGs (soybooru especially) render
+    with weird dark layers.
+    """
     from PIL import Image, ImageOps
 
     im = Image.open(io.BytesIO(data))
@@ -147,6 +152,11 @@ def open_rgb(data: bytes):
         im = ImageOps.exif_transpose(im)
     except Exception:
         pass
+    if im.mode in ("RGBA", "LA", "PA", "P"):
+        background = Image.new("RGB", im.size, (255, 255, 255))
+        rgba = im.convert("RGBA")
+        background.paste(rgba, mask=rgba.split()[-1])
+        return background
     return im.convert("RGB")
 
 
@@ -240,6 +250,40 @@ def alt_r34_cdn_url(url: str) -> str:
     return ""
 
 
+def is_soy_api_url(url: str) -> bool:
+    """Soybooru file/thumbnail endpoint (Cloudflare-challenged for plain fetch)."""
+    low = (url or "").strip().lower()
+    return low.startswith("https://soybooru.com/api/booru/posts/")
+
+
+def fetch_soy_impersonated(url: str, *, timeout: float = 30.0) -> bytes:
+    """Fetch a soybooru URL with browser impersonation (as the bot does).
+
+    Plain urllib gets 449/challenged on these endpoints; safari
+    impersonation passes. Raises when curl_cffi is missing or the asset
+    itself is gated (pow_required = dead file, nothing can fetch it).
+    """
+    from curl_cffi.requests import Session
+
+    key = (url or "").strip()
+    if not key:
+        raise ValueError("empty url")
+    with Session(impersonate="safari18_0", timeout=float(timeout or 30.0)) as sess:
+        resp = sess.get(key, headers={"Accept": "image/*,*/*"})
+        resp.raise_for_status()
+        data = bytes(resp.content or b"")
+    if not data:
+        raise ValueError("empty body")
+    ctype = ""
+    try:
+        ctype = (resp.headers.get("content-type") or "").lower()
+    except Exception:
+        pass
+    if "text/html" in ctype:
+        raise ValueError("html body")
+    return data
+
+
 def fetch_url_bytes(
     url: str, *, timeout: float = 18.0, retries: int = 3
 ) -> bytes:
@@ -251,6 +295,12 @@ def fetch_url_bytes(
     key = (url or "").strip()
     if not key:
         raise ValueError("empty url")
+    if is_soy_api_url(key):
+        # Impersonated first (bot parity); plain urllib as fallback.
+        try:
+            return fetch_soy_impersonated(key, timeout=timeout)
+        except Exception:
+            logger.debug("soy impersonated fetch failed, trying plain", exc_info=True)
     last: BaseException | None = None
     attempts = max(1, int(retries))
     candidates = [key]

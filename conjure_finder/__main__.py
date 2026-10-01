@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import tkinter as tk
 
-from conjure_finder.bootstrap import ensure_path, load_env
+from conjure_finder.bootstrap import apply_env
 
 
 def main() -> None:
-    ensure_path()
-    load_env()
+    apply_env()
     from conjure_finder import __version__
     from conjure_finder.settings import apply_settings_file, settings_status
 

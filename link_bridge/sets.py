@@ -1114,7 +1114,9 @@ class SetsPanel(ttk.Frame):
 
                     mirror_id = mirror_char_id_from_craft(body)
                     if mirror_id > 0:
-                        self._open_omni_ui(mirror_id)
+                        self._open_omni_ui(
+                            mirror_id, notice=("MIRRORED", f"→ #{mirror_id}")
+                        )
                 if silent:
                     from link_bridge.thumb_menu import apply_silent_craft_item
 

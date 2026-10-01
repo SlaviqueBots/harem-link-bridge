@@ -92,9 +92,19 @@ def _show_internal(path: Path) -> None:
     root.bind("<Escape>", lambda _e: root.destroy())
 
 
-def open_full_image(url: str, *, on_err: Callable[[BaseException], None] | None = None) -> None:
-    """Download ``url`` off-thread and open it in the default image viewer."""
+def open_full_image(
+    url: str,
+    *,
+    fallback_urls: list[str] | tuple[str, ...] = (),
+    on_err: Callable[[BaseException], None] | None = None,
+) -> None:
+    """Download ``url`` off-thread and open it in the default image viewer.
+
+    ``fallback_urls`` are tried in order when the primary fails (e.g. a
+    pow-gated soy /file while its /thumbnail still serves).
+    """
     target = (url or "").strip()
+    fallbacks = [u for u in [(f or "").strip() for f in fallback_urls] if u]
     if not target:
         if on_err:
             on_err(ValueError("no image url"))
@@ -102,10 +112,19 @@ def open_full_image(url: str, *, on_err: Callable[[BaseException], None] | None 
 
     def worker() -> None:
         try:
+            path = None
+            last_exc: BaseException | None = None
             with _lock:
-                path = _download(target)
+                for candidate in [target] + fallbacks:
+                    try:
+                        path = _download(candidate)
+                    except Exception as exc:
+                        last_exc = exc
+                        path = None
+                    if path is not None:
+                        break
             if path is None:
-                raise RuntimeError("empty download")
+                raise last_exc or RuntimeError("empty download")
             try:
                 _open_path(path)
             except Exception:

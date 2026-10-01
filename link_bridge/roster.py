@@ -1,4 +1,4 @@
-"""Paged roster: Undone / Done / Flavoured / Unflavoured / Sets / Taming / Market."""
+"""Paged roster: Undone / Done / Flavoured / Unflavoured / Sets / Taming / Market / Soy."""
 
 from __future__ import annotations
 
@@ -66,7 +66,14 @@ FetchMarketFn = Callable[..., None]
 BuyMarketFn = Callable[[int, OkCb, ErrCb], None]
 StatusVarFn = Callable[[], tk.StringVar | None]
 
-_ROSTER_GRID_MODES = ("undone", "done", "flavoured", "unflavoured")
+_ROSTER_GRID_MODES = (
+    "undone",
+    "done",
+    "flavoured",
+    "unflavoured",
+    "soy_undone",
+    "soy_done",
+)
 _TAB_MODES = (
     "undone",
     "done",
@@ -75,6 +82,8 @@ _TAB_MODES = (
     "sets",
     "tamed",
     "market",
+    "soy_undone",
+    "soy_done",
 )
 
 
@@ -90,7 +99,7 @@ def _item_ids(body: dict[str, Any]) -> tuple[int, ...]:
 
 
 class RosterPanel(ttk.Frame):
-    """Undone | Done | Flavoured | Unflavoured | Sets | Taming | Market."""
+    """Undone | Done | Flavoured | Unflavoured | Sets | Taming | Market | Soy."""
 
     def __init__(
         self,
@@ -237,6 +246,8 @@ class RosterPanel(ttk.Frame):
             ("sets", "Sets"),
             ("tamed", "Taming"),
             ("market", "Market"),
+            ("soy_undone", "Soy"),
+            ("soy_done", "Soy done"),
         )
         for mode, label in _labels:
             btn = ttk.Radiobutton(
@@ -498,14 +509,102 @@ class RosterPanel(ttk.Frame):
 
     def sync_after_done_change(self, char_id: int, *, done: bool) -> None:
         """Keep Undone/Done grids in sync after a quiet dan/undan."""
-        self.invalidate_roster_page_cache("undone", "done")
+        self.invalidate_roster_page_cache("undone", "done", "soy_undone", "soy_done")
         mode = str(self._mode or "")
-        leaving = (done and mode == "undone") or ((not done) and mode == "done")
-        entering = (done and mode == "done") or ((not done) and mode == "undone")
+        leaving = (done and mode in ("undone", "soy_undone")) or (
+            (not done) and mode in ("done", "soy_done")
+        )
+        entering = (done and mode in ("done", "soy_done")) or (
+            (not done) and mode in ("undone", "soy_undone")
+        )
         if leaving:
             self.remove_char_from_view(int(char_id))
         if entering:
             self.refresh()
+
+    def _insert_mirror_row(self, mid: int, char_id: int) -> None:
+        """Show a fresh mirror without the full reload stall.
+
+        Mirror art matches the original, so clone its row at the top
+        (newest-first, like normal sorting) instead of refresh().
+        """
+        self.invalidate_roster_page_cache(
+            "undone", "done", "soy_undone", "soy_done"
+        )
+        src = self._item_by_id(int(char_id))
+        if src is None:
+            if self._mode in ("undone", "done", "soy_undone", "soy_done"):
+                self.refresh()
+            return
+        if self._mode not in ("done", "soy_done") and not (
+            self._mode == "flavoured" and str(src.get("flavour") or "").strip()
+        ):
+            return
+        row = dict(src)
+        row["id"] = int(mid)
+        row["done"] = True
+        row["can_tame"] = False
+        row["tamed"] = False
+        self._items.append(row)
+        self._total = int(self._total or 0) + 1
+        try:
+            self._render_grid(reuse_bytes=True)
+        except Exception:
+            logger.debug("mirror insert render failed", exc_info=True)
+            self.refresh()
+            return
+        self._apply_roster_meta(
+            {
+                "page": self._page,
+                "page_size": self._page_size,
+                "total": self._total,
+                "scope": self._scope,
+            },
+            kind=self._roster_mode_key(),
+            q=self._query,
+        )
+
+    def _insert_mirror_row(self, mid: int, char_id: int) -> None:
+        """Show a fresh mirror without the full reload stall.
+
+        Mirror art matches the original, so clone its row at the top
+        (newest-first, like normal sorting) instead of refresh().
+        """
+        self.invalidate_roster_page_cache(
+            "undone", "done", "soy_undone", "soy_done"
+        )
+        src = self._item_by_id(int(char_id))
+        if src is None:
+            if self._mode in ("undone", "done", "soy_undone", "soy_done"):
+                self.refresh()
+            return
+        if self._mode not in ("done", "soy_done") and not (
+            self._mode == "flavoured" and str(src.get("flavour") or "").strip()
+        ):
+            return
+        row = dict(src)
+        row["id"] = int(mid)
+        row["done"] = True
+        row["can_tame"] = False
+        row["tamed"] = False
+        self._items.insert(0, row)
+        self._total = int(self._total or 0) + 1
+        try:
+            self._render_grid(reuse_bytes=True)
+        except Exception:
+            logger.debug("mirror insert render failed", exc_info=True)
+            self.refresh()
+            return
+        self._apply_roster_meta(
+            {
+                "page": self._page,
+                "page_size": self._page_size,
+                "total": self._total,
+                "scope": self._scope,
+            },
+            kind=self._roster_mode_key(),
+            q=self._query,
+        )
 
     def remove_char_from_view(self, char_id: int) -> None:
         """Pull a card out of the current page (e.g. Done while on Undone)."""
@@ -895,6 +994,8 @@ class RosterPanel(ttk.Frame):
             return "roster_unflavoured"
         if self._mode == "done":
             return "roster_done"
+        if self._mode in ("soy_undone", "soy_done"):
+            return "soy"
         return "roster_undone"
 
     def _sync_roster_browse_labels(self) -> None:
@@ -916,6 +1017,8 @@ class RosterPanel(ttk.Frame):
             panel.set_labels(title="unflavoured", unit="unflavoured")
         elif self._mode == "done":
             panel.set_labels(title="done", unit="done")
+        elif self._mode in ("soy_undone", "soy_done"):
+            panel.set_labels(title="soy", unit="soy")
         else:
             panel.set_labels(title="undone", unit="undone")
         if self._mode == "market":
@@ -938,12 +1041,14 @@ class RosterPanel(ttk.Frame):
             return "roster_flavoured"
         if self._mode == "unflavoured":
             return "roster_unflavoured"
+        if self._mode in ("soy_undone", "soy_done"):
+            return "soy"
         return ""
 
     def _roster_done_arg(self) -> int:
         if self._mode in ("flavoured", "unflavoured"):
             return -1
-        return 1 if self._mode == "done" else 0
+        return 1 if self._mode in ("done", "soy_done") else 0
 
     def _show_pane(self, mode: str) -> None:
         for m, fr in self._pane_fr.items():
@@ -1627,6 +1732,15 @@ class RosterPanel(ttk.Frame):
             self.meta_var.set(f"No image URL for #{char_id}")
             return
         self.meta_var.set(f"Opening image #{char_id}…")
+        fallbacks = [
+            u
+            for u in (
+                (item.get("image_url") or "").strip(),
+                (item.get("file_url") or "").strip(),
+                (item.get("preview_url") or "").strip(),
+            )
+            if u and u != url
+        ]
 
         def on_err(exc: BaseException) -> None:
             self.after(
@@ -1634,7 +1748,7 @@ class RosterPanel(ttk.Frame):
                 lambda: self.meta_var.set(f"Open image failed: {exc}"),
             )
 
-        open_full_image(url, on_err=on_err)
+        open_full_image(url, fallback_urls=fallbacks, on_err=on_err)
 
     def _thumb_context_menu(self, event, char_id: int, post_url: str) -> None:
         from link_bridge.thumb_menu import popup_thumb_menu
@@ -1766,7 +1880,6 @@ class RosterPanel(ttk.Frame):
                 self._on_log(f"Craft {action_id} char {char_id}: {notice}")
                 if open_omni_after_mirror and self._open_omni_ui is not None:
                     # Original stays craftable; the new row is a frozen Done copy.
-                    self._open_omni_ui(int(char_id))
                     mid = 0
                     try:
                         from link_bridge.thumb_menu import mirror_char_id_from_craft
@@ -1774,6 +1887,8 @@ class RosterPanel(ttk.Frame):
                         mid = mirror_char_id_from_craft(body)
                     except Exception:
                         mid = 0
+                    notice = (("MIRRORED", f"→ #{mid}") if mid > 0 else None)
+                    self._open_omni_ui(int(char_id), notice=notice)
                     if mid > 0:
                         self._on_log(f"Mirrored copy #{mid} (omni stays on #{char_id})")
                 if silent:
@@ -1791,9 +1906,27 @@ class RosterPanel(ttk.Frame):
                             int(char_id), done=(action_id == "dn")
                         )
                     elif action_id == "mi":
-                        self.invalidate_roster_page_cache("undone", "done")
-                        if self._mode in ("undone", "done"):
-                            self.refresh()
+                        try:
+                            from link_bridge.thumb_menu import (
+                                mirror_char_id_from_craft as _mid_from_craft,
+                            )
+
+                            mid = int(_mid_from_craft(body) or 0)
+                        except Exception:
+                            mid = 0
+                        if mid > 0:
+                            self._insert_mirror_row(mid, int(char_id))
+                        else:
+                            self.invalidate_roster_page_cache(
+                                "undone", "done", "soy_undone", "soy_done"
+                            )
+                            if self._mode in (
+                                "undone",
+                                "done",
+                                "soy_undone",
+                                "soy_done",
+                            ):
+                                self.refresh()
                 elif self._should_focus():
                     try:
                         from link_bridge.focus_telegram import focus_telegram
