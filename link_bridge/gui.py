@@ -665,16 +665,21 @@ class LinkBridgeApp(tk.Tk):
             side=tk.LEFT, padx=(8, 0)
         )
 
-        adv = ttk.LabelFrame(root, text="Server (usually leave as-is)", padding=8)
-        adv.pack(fill=tk.X, **pad)
+        sub_nb = ttk.Notebook(root)
+        sub_nb.pack(fill=tk.X, **pad)
+        conn_page = ttk.Frame(sub_nb, padding=4)
+        proxy_page = ttk.Frame(sub_nb, padding=4)
+        sub_nb.add(conn_page, text="Connection")
+        sub_nb.add(proxy_page, text="Proxy")
+        adv = ttk.LabelFrame(conn_page, text="Server (usually leave as-is)", padding=8)
+        adv.pack(fill=tk.X)
         ttk.Label(adv, text="Host").pack(anchor=tk.W)
         self.host_var = tk.StringVar(value=self.cfg.host)
         ttk.Entry(adv, textvariable=self.host_var).pack(fill=tk.X, pady=(0, 6))
         ttk.Label(adv, text="Port").pack(anchor=tk.W)
         self.port_var = tk.StringVar(value=str(self.cfg.port))
         ttk.Entry(adv, textvariable=self.port_var).pack(fill=tk.X)
-
-        self._build_proxy_frame(root, pad)
+        self._build_proxy_frame(proxy_page, pad)
 
         ttk.Label(root, text="Log").pack(anchor=tk.W, pady=(10, 0))
         self.log = tk.Text(root, height=8, wrap=tk.WORD, font="TkFixedFont")
@@ -746,6 +751,8 @@ class LinkBridgeApp(tk.Tk):
             fr, wraplength=560, justify=tk.LEFT,
             text="Reconnect (Disconnect → Connect) after changing proxy settings.",
         ).pack(anchor=tk.W)
+        ttk.Button(fr, text="Save settings",
+                   command=self.save_settings).pack(anchor=tk.W, pady=(6, 0))
 
     def _on_proxy_uri_fill(self) -> None:
         from link_bridge import proxy as _proxy
