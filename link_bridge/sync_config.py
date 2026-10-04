@@ -69,6 +69,14 @@ def sync_config(*, start_hidden: bool = False) -> Path:
         check_updates=existing.check_updates,
         update_port=existing.update_port,
         update_url=existing.update_url,
+        proxy_enabled=existing.proxy_enabled,
+        proxy_type=existing.proxy_type,
+        proxy_route_all=existing.proxy_route_all,
+        proxy_host=existing.proxy_host,
+        proxy_http_port=existing.proxy_http_port,
+        proxy_socks_port=existing.proxy_socks_port,
+        proxy_user=existing.proxy_user,
+        proxy_pass=existing.proxy_pass,
     )
     # Owner bootstrap only: seed legacy token when nothing is paired yet.
     if not cfg.is_paired() and not cfg.can_legacy_connect():

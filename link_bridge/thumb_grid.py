@@ -298,7 +298,13 @@ def fetch_soy_impersonated(url: str, *, timeout: float = 30.0) -> bytes:
     if not key:
         raise ValueError("empty url")
     with Session(impersonate="safari18_0", timeout=float(timeout or 30.0)) as sess:
-        resp = sess.get(key, headers={"Accept": "image/*,*/*"})
+        from link_bridge import proxy as _proxy
+
+        resp = sess.get(
+            key,
+            headers={"Accept": "image/*,*/*"},
+            proxies=_proxy.curl_proxies_for(key) or None,
+        )
         resp.raise_for_status()
         data = bytes(resp.content or b"")
     if not data:
@@ -340,8 +346,10 @@ def fetch_url_bytes(
         last = None
         for i in range(attempts):
             try:
+                from link_bridge import proxy as _proxy
+
                 req = urllib.request.Request(target, headers=_request_headers(target))
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                with _proxy.open_url(req, timeout=timeout) as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
                     data = resp.read()
                 if not data:

@@ -450,6 +450,16 @@ class BridgeConfig:
     tournament_alarm: bool = False
     # Hardcore fullscreen: re-zoom content windows that drop to windowed (off).
     hardcore_fullscreen: bool = False
+    # Optional outbound proxy (off by default). Type "http" or "socks5".
+    # proxy_route_all=False → only booru hosts via proxy, bot server direct.
+    proxy_enabled: bool = False
+    proxy_type: str = "http"
+    proxy_route_all: bool = False
+    proxy_host: str = ""
+    proxy_http_port: int = 0
+    proxy_socks_port: int = 0
+    proxy_user: str = ""
+    proxy_pass: str = ""
 
     def ws_url(self) -> str:
         host = (self.host or "").strip() or "127.0.0.1"
@@ -543,6 +553,14 @@ def load_config() -> BridgeConfig:
         browser_hook_port=_to_int(raw.get("browser_hook_port"), 8767),
         tournament_alarm=bool(raw.get("tournament_alarm", False)),
         hardcore_fullscreen=bool(raw.get("hardcore_fullscreen", False)),
+        proxy_enabled=bool(raw.get("proxy_enabled", False)),
+        proxy_type=_normalize_proxy_type(raw.get("proxy_type", "http")),
+        proxy_route_all=bool(raw.get("proxy_route_all", False)),
+        proxy_host=str(raw.get("proxy_host") or "").strip(),
+        proxy_http_port=_to_int(raw.get("proxy_http_port"), 0),
+        proxy_socks_port=_to_int(raw.get("proxy_socks_port"), 0),
+        proxy_user=str(raw.get("proxy_user") or ""),
+        proxy_pass=str(raw.get("proxy_pass") or ""),
     )
     cfg.ensure_device_id()
     return cfg
@@ -582,6 +600,11 @@ def _clamp_ui_scale(raw: object) -> float:
     from link_bridge.dpi import clamp_ui_scale
 
     return clamp_ui_scale(raw)
+
+
+def _normalize_proxy_type(raw: object) -> str:
+    text = str(raw or "http").strip().lower()
+    return "socks5" if text.startswith("socks") else "http"
 
 
 def _normalize_omni_repeat_key(raw: object) -> str:

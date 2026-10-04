@@ -139,6 +139,12 @@ def _run_cli() -> int:
     from link_bridge.ws_client import BridgeClient
 
     cfg = load_config()
+    try:
+        from link_bridge import proxy as _proxy
+
+        _proxy.apply_to_process(cfg)
+    except Exception:
+        pass
     if not cfg.token or int(cfg.user_id) <= 0:
         print(
             "Missing token/user_id — run from the bot folder after bootstrap, "

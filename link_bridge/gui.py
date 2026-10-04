@@ -175,6 +175,12 @@ class LinkBridgeApp(tk.Tk):
         self.cfg = cfg or load_config()
         self.cfg.ensure_device_id()
         try:
+            from link_bridge import proxy as _proxy
+
+            _proxy.apply_to_process(self.cfg)
+        except Exception:
+            pass
+        try:
             from link_bridge import image_cache
 
             image_cache.configure(enabled=bool(self.cfg.offline_image_cache))
@@ -668,10 +674,111 @@ class LinkBridgeApp(tk.Tk):
         self.port_var = tk.StringVar(value=str(self.cfg.port))
         ttk.Entry(adv, textvariable=self.port_var).pack(fill=tk.X)
 
+        self._build_proxy_frame(root, pad)
+
         ttk.Label(root, text="Log").pack(anchor=tk.W, pady=(10, 0))
         self.log = tk.Text(root, height=8, wrap=tk.WORD, font="TkFixedFont")
         self.log.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
         self.log.configure(state=tk.DISABLED)
+
+    def _build_proxy_frame(self, root: ttk.Frame, pad: dict) -> None:
+        fr = ttk.LabelFrame(root, text="Proxy (optional, off by default)", padding=8)
+        fr.pack(fill=tk.X, **pad)
+        self.proxy_enabled_var = tk.BooleanVar(value=bool(self.cfg.proxy_enabled))
+        ttk.Checkbutton(
+            fr,
+            text="Use proxy",
+            variable=self.proxy_enabled_var,
+        ).pack(anchor=tk.W)
+        row = ttk.Frame(fr)
+        row.pack(fill=tk.X, pady=(4, 0))
+        self.proxy_type_var = tk.StringVar(
+            value="socks5" if str(self.cfg.proxy_type).startswith("socks") else "http"
+        )
+        ttk.Radiobutton(row, text="HTTP(S)", value="http",
+                        variable=self.proxy_type_var).pack(side=tk.LEFT)
+        ttk.Radiobutton(row, text="SOCKS5", value="socks5",
+                        variable=self.proxy_type_var).pack(side=tk.LEFT, padx=(12, 0))
+        route = ttk.Frame(fr)
+        route.pack(fill=tk.X, pady=(2, 0))
+        self.proxy_route_all_var = tk.BooleanVar(value=bool(self.cfg.proxy_route_all))
+        ttk.Radiobutton(route, text="Boorus only (server stays direct)",
+                        value=False, variable=self.proxy_route_all_var).pack(side=tk.LEFT)
+        ttk.Radiobutton(route, text="All traffic", value=True,
+                        variable=self.proxy_route_all_var).pack(side=tk.LEFT, padx=(12, 0))
+        grid = ttk.Frame(fr)
+        grid.pack(fill=tk.X, pady=(4, 0))
+        self.proxy_host_var = tk.StringVar(value=self.cfg.proxy_host)
+        self.proxy_http_port_var = tk.StringVar(
+            value=str(self.cfg.proxy_http_port or ""))
+        self.proxy_socks_port_var = tk.StringVar(
+            value=str(self.cfg.proxy_socks_port or ""))
+        self.proxy_user_var = tk.StringVar(value=self.cfg.proxy_user)
+        self.proxy_pass_var = tk.StringVar(value=self.cfg.proxy_pass)
+        self.proxy_uri_var = tk.StringVar(value="")
+        fields = (
+            ("Address", self.proxy_host_var, False),
+            ("HTTP(S) port", self.proxy_http_port_var, False),
+            ("SOCKS5 port", self.proxy_socks_port_var, False),
+            ("Login", self.proxy_user_var, False),
+            ("Password", self.proxy_pass_var, True),
+        )
+        for i, (label, var, secret) in enumerate(fields):
+            ttk.Label(grid, text=label).grid(row=i, column=0, sticky=tk.W, pady=1)
+            ttk.Entry(grid, textvariable=var, width=28,
+                      show="*" if secret else "").grid(
+                row=i, column=1, sticky=tk.EW, padx=(6, 0), pady=1)
+        grid.columnconfigure(1, weight=1)
+        ttk.Label(fr, text="Paste login:password@ip:port (HTTP)").pack(
+            anchor=tk.W, pady=(6, 0))
+        uri_row = ttk.Frame(fr)
+        uri_row.pack(fill=tk.X)
+        ttk.Entry(uri_row, textvariable=self.proxy_uri_var).pack(
+            side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(uri_row, text="Fill", width=8,
+                   command=self._on_proxy_uri_fill).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(uri_row, text="Test", width=8,
+                   command=self._on_proxy_test).pack(side=tk.LEFT, padx=(6, 0))
+        self.proxy_status_var = tk.StringVar(value="")
+        ttk.Label(fr, textvariable=self.proxy_status_var, wraplength=560).pack(
+            anchor=tk.W, pady=(2, 0))
+        ttk.Label(
+            fr, wraplength=560, justify=tk.LEFT,
+            text="Reconnect (Disconnect → Connect) after changing proxy settings.",
+        ).pack(anchor=tk.W)
+
+    def _on_proxy_uri_fill(self) -> None:
+        from link_bridge import proxy as _proxy
+
+        try:
+            parts = _proxy.parse_proxy_uri(self.proxy_uri_var.get())
+        except ValueError as exc:
+            self.proxy_status_var.set(str(exc))
+            return
+        self.proxy_host_var.set(str(parts["host"]))
+        port = str(parts["port"])
+        if self.proxy_type_var.get() == "socks5":
+            self.proxy_socks_port_var.set(port)
+        else:
+            self.proxy_http_port_var.set(port)
+        if parts["user"]:
+            self.proxy_user_var.set(str(parts["user"]))
+        if parts["password"]:
+            self.proxy_pass_var.set(str(parts["password"]))
+        self.proxy_status_var.set("Filled from URI — Save settings to apply.")
+
+    def _on_proxy_test(self) -> None:
+        if not self._read_form_into_cfg():
+            return
+        self.proxy_status_var.set("Testing proxy…")
+        threading.Thread(target=self._proxy_test_thread, daemon=True).start()
+
+    def _proxy_test_thread(self) -> None:
+        from link_bridge import proxy as _proxy
+
+        ok, detail = _proxy.test_proxy(self.cfg)
+        self._ui(lambda: self.proxy_status_var.set(
+            f"Proxy OK: {detail}" if ok else f"Proxy failed: {detail}"))
 
     def _idle_status_text(self) -> str:
         if self.cfg.is_paired() or self.cfg.can_legacy_connect():
@@ -763,6 +870,39 @@ class LinkBridgeApp(tk.Tk):
             self.cfg.hardcore_fullscreen = bool(
                 self.hardcore_fullscreen_var.get()
             )
+        if hasattr(self, "proxy_enabled_var"):
+            self.cfg.proxy_enabled = bool(self.proxy_enabled_var.get())
+            self.cfg.proxy_type = (
+                "socks5" if self.proxy_type_var.get() == "socks5" else "http"
+            )
+            self.cfg.proxy_route_all = bool(self.proxy_route_all_var.get())
+            self.cfg.proxy_host = (self.proxy_host_var.get() or "").strip()
+            try:
+                http_port = int(self.proxy_http_port_var.get().strip() or "0")
+                socks_port = int(self.proxy_socks_port_var.get().strip() or "0")
+            except ValueError:
+                messagebox.showerror("Harem Link Bridge", "Proxy ports must be numbers.")
+                return False
+            self.cfg.proxy_http_port = max(0, http_port)
+            self.cfg.proxy_socks_port = max(0, socks_port)
+            self.cfg.proxy_user = self.proxy_user_var.get() or ""
+            self.cfg.proxy_pass = self.proxy_pass_var.get() or ""
+            if self.cfg.proxy_enabled:
+                from link_bridge import proxy as _proxy
+
+                scheme, url = _proxy.active_proxy(self.cfg)
+                if not url:
+                    messagebox.showinfo(
+                        "Harem Link Bridge",
+                        "Proxy is on but address/port is missing.",
+                    )
+                    return False
+            try:
+                from link_bridge import proxy as _proxy
+
+                _proxy.apply_to_process(self.cfg)
+            except Exception:
+                pass
         from link_bridge.config import _clamp_preview_scale, _clamp_scroll_speed
         from link_bridge.theme import normalize_theme
 

@@ -92,7 +92,9 @@ def manifest_url(cfg: BridgeConfig) -> str:
 def fetch_manifest(cfg: BridgeConfig, *, timeout: float = 8.0) -> UpdateInfo | None:
     url = manifest_url(cfg)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        from link_bridge import proxy as _proxy
+
+        with _proxy.open_url(url, timeout=timeout) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
         logger.info("update check failed (%s): %s", url, exc)
@@ -146,7 +148,9 @@ def download_update(
         on_status("Connecting…")
     req = urllib.request.Request(info.url, headers={"User-Agent": f"HaremLinkBridge/{__version__}"})
     h = hashlib.sha256()
-    with urllib.request.urlopen(req, timeout=timeout) as resp, tmp.open("wb") as out:
+    from link_bridge import proxy as _proxy
+
+    with _proxy.open_url(req, timeout=timeout) as resp, tmp.open("wb") as out:
         total = int(info.size or 0)
         if not total:
             try:
