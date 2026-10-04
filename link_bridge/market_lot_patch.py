@@ -24,17 +24,36 @@ logger = logging.getLogger(__name__)
 _installed = False
 _get_state: Callable[[], str] | None = None
 _set_state: Callable[[str], None] | None = None
+_hardcore_fullscreen: Callable[[], bool] | None = None
+
+
+def set_hardcore_fullscreen(fn: Callable[[], bool] | None) -> None:
+    """Predicate the lot window consults before re-zooming (hardcore mode)."""
+    global _hardcore_fullscreen
+    _hardcore_fullscreen = fn
 
 
 def _best_full_url(item: dict) -> str:
+    urls = full_url_candidates(item)
+    return urls[0] if urls else ""
+
+
+def full_url_candidates(item: dict) -> list[str]:
+    """image/file/preview in order, deduped.
+
+    One pow-gated soy endpoint (449) must not blank the lot window when
+    its sibling serves — the frozen loader tries a single URL.
+    """
+    out: list[str] = []
+    src = item if isinstance(item, dict) else {}
     for key in ("image_url", "file_url", "preview_url"):
         try:
-            url = str(item.get(key) or "").strip()
+            url = str(src.get(key) or "").strip()
         except Exception:
             continue
-        if url.startswith("http"):
-            return url
-    return ""
+        if url.startswith("http") and url not in out:
+            out.append(url)
+    return out
 
 
 def _fit_size(w: int, h: int, max_w: int, max_h: int) -> tuple[int, int]:
@@ -63,12 +82,16 @@ def _patched_load_image(self: Any) -> None:
         item = dict(getattr(self, "_item", None) or {})
     except Exception:
         item = {}
-    url = _best_full_url(item)
-    if not url:
+    urls = full_url_candidates(item)
+    if not urls:
         try:
-            url = str(self._display_url() or "").strip()
+            disp = str(self._display_url() or "").strip()
         except Exception:
-            url = ""
+            disp = ""
+        if disp:
+            urls = [disp]
+    url = urls[0] if urls else ""
+    picked: dict[str, str] = {"url": url}
     if not url:
         try:
             self._img_lbl.configure(text="No preview", image="")
@@ -76,9 +99,9 @@ def _patched_load_image(self: Any) -> None:
         except Exception:
             pass
         return
-    if getattr(self, "_photo", None) is not None and url == getattr(
+    if getattr(self, "_photo", None) is not None and getattr(
         self, "_shown_url", None
-    ):
+    ) in urls:
         return
     try:
         self._img_lbl.configure(image="", text="Loading…")
@@ -90,7 +113,7 @@ def _patched_load_image(self: Any) -> None:
     def _refit_cached() -> None:
         raw = getattr(self, "_full_pil", None)
         cur_url = getattr(self, "_shown_url", None)
-        if raw is None or cur_url != url:
+        if raw is None or cur_url != picked["url"]:
             return
         try:
             if not self.winfo_exists():
@@ -127,11 +150,20 @@ def _patched_load_image(self: Any) -> None:
             from link_bridge import image_cache
             from link_bridge.thumb_grid import fetch_url_bytes
 
-            data = image_cache.get(url) or b""
-            if not data:
-                data = fetch_url_bytes(url, timeout=30, retries=2)
+            data = b""
+            for cand in urls:
+                try:
+                    data = image_cache.get(cand) or b""
+                    if not data:
+                        data = fetch_url_bytes(cand, timeout=30, retries=2)
+                        if data:
+                            image_cache.put(cand, data)
+                except Exception as exc:
+                    logger.debug("lot full image fetch failed: %s", exc, exc_info=True)
+                    data = b""
                 if data:
-                    image_cache.put(url, data)
+                    picked["url"] = cand
+                    break
         except Exception as exc:
             logger.debug("lot full image fetch failed: %s", exc, exc_info=True)
             data = b""
@@ -149,7 +181,7 @@ def _patched_load_image(self: Any) -> None:
 
                 raw = Image.open(io.BytesIO(bytes(data))).convert("RGB")
                 self._full_pil = raw
-                self._shown_url = url
+                self._shown_url = picked["url"]
                 try:
                     lw = self._img_lbl.winfo_width()
                     lh = self._img_lbl.winfo_height()
@@ -195,6 +227,15 @@ def _controls_first_order(keys_sides: list[tuple[Any, str]]) -> list[Any]:
 def _wrap_build_ui(orig: Any) -> Any:
     def _build_ui(self: Any) -> None:
         orig(self)
+        try:
+            from link_bridge.hardcore import bind_hardcore
+
+            bind_hardcore(
+                self,
+                lambda: bool(_hardcore_fullscreen and _hardcore_fullscreen()),
+            )
+        except Exception:
+            logger.debug("lot hardcore bind failed", exc_info=True)
         try:
             kids = list(self.winfo_children())
             packed: list[tuple[Any, dict]] = []

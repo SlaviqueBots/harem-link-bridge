@@ -49,6 +49,24 @@ def _clamp_aspect(raw: float) -> float:
     return max(0.2, min(a, 4.0))
 
 
+def thumb_fallback_urls(item: dict[str, Any] | None) -> list[str]:
+    """preview/image/file in order, deduped.
+
+    One pow-gated soy endpoint (449) must not sink the tile when its
+    sibling serves — gallery tiles otherwise try a single URL.
+    """
+    out: list[str] = []
+    src = item if isinstance(item, dict) else {}
+    for key in ("preview_url", "image_url", "file_url"):
+        try:
+            u = (src.get(key) or "").strip()
+        except Exception:
+            continue
+        if u.startswith("http") and u not in out:
+            out.append(u)
+    return out
+
+
 def entries_need_decode(entries: list[dict[str, Any]]) -> bool:
     """True when a tile holds bytes but no photo (a decode pass is required).
 
@@ -679,6 +697,9 @@ class JustifiedGallery:
     def _fetch(self, entry: dict[str, Any], gen: int) -> None:
         url = entry["url"]
         attempts = int(entry.get("fetch_attempts") or 0)
+        tried = entry.setdefault("tried_urls", [])
+        if url and url not in tried:
+            tried.append(url)
 
         def on_data(data: bytes) -> None:
             entry["fetch_attempts"] = 0
@@ -694,6 +715,19 @@ class JustifiedGallery:
             def fail_or_retry() -> None:
                 if gen != self._stamp or not entry["label"].winfo_exists():
                     return
+                for cand in thumb_fallback_urls(entry.get("item")):
+                    if cand not in tried:
+                        entry["url"] = cand
+                        entry["fetch_attempts"] = 0
+                        entry["label"].configure(text="…")
+                        delay = 700 * nxt
+                        try:
+                            entry["label"].after(
+                                delay, lambda: self._fetch(entry, gen)
+                            )
+                        except Exception:
+                            pass
+                        return
                 if nxt < 3:
                     entry["label"].configure(text="…")
                     delay = 700 * nxt

@@ -44,6 +44,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Local DEV run: skip singleton + sync_config + silent auto-update",
     )
     parser.add_argument(
+        "--release-check",
+        action="store_true",
+        help="Release checkpoint: like --dev (no singleton/sync/auto-update) "
+        "but keeps the version title so the build is identifiable",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=None,
@@ -65,7 +71,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # Never rewrite adopter config on frozen launches (owner bootstrap only).
     # DEV runs also skip — keep the copied live settings intact.
-    if not getattr(sys, "frozen", False) and not args.dev:
+    if (
+        not getattr(sys, "frozen", False)
+        and not args.dev
+        and not args.release_check
+    ):
         try:
             from link_bridge.sync_config import sync_config
 
@@ -76,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cli:
         return _run_cli()
 
-    if sys.platform == "win32" and not args.dev:
+    if sys.platform == "win32" and not args.dev and not args.release_check:
         from link_bridge.singleton import acquire_singleton
 
         if not acquire_singleton():
@@ -105,6 +115,16 @@ def main(argv: list[str] | None = None) -> int:
         cfg.start_hidden = False
         app = LinkBridgeApp(cfg)
         app.title("Harem Link Bridge  DEV  (local source)")
+        app.mainloop()
+        return 0
+    if args.release_check:
+        # Release checkpoint build: identifiable version title, but no
+        # singleton/sync/auto-update side effects (DEV-grade isolation).
+        from link_bridge import __version__ as _ver
+
+        cfg.start_hidden = False
+        app = LinkBridgeApp(cfg)
+        app.title(f"Harem Link Bridge  v{_ver}  RELEASE CHECK")
         app.mainloop()
         return 0
 

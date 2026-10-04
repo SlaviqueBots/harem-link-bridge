@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -256,6 +257,34 @@ def is_soy_api_url(url: str) -> bool:
     return low.startswith("https://soybooru.com/api/booru/posts/")
 
 
+_SOY_API_RE = re.compile(
+    r"^https://soybooru\.com/api/booru/posts/(\d+)/(file|thumbnail)(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+
+
+def parse_soy_api_url(url: str) -> tuple[int, str] | None:
+    """(post_id, file|thumbnail) for a soy asset URL, else None."""
+    m = _SOY_API_RE.match((url or "").strip())
+    if not m:
+        return None
+    try:
+        return int(m.group(1)), m.group(2).lower()
+    except (TypeError, ValueError):
+        return None
+
+
+#: Bot-side soy fetcher for pow-gated PC networks. Registered by the GUI
+#: when the WS client is up; fetch_url_bytes uses it after direct fetch
+#: fails. Sync callable: url -> bytes (worker threads only).
+_soy_proxy: Callable[[str], bytes] | None = None
+
+
+def set_soy_proxy(fn: Callable[[str], bytes] | None) -> None:
+    global _soy_proxy
+    _soy_proxy = fn
+
+
 def fetch_soy_impersonated(url: str, *, timeout: float = 30.0) -> bytes:
     """Fetch a soybooru URL with browser impersonation (as the bot does).
 
@@ -322,7 +351,13 @@ def fetch_url_bytes(
                 return data
             except Exception as exc:
                 last = exc
-                if isinstance(exc, urllib.error.HTTPError) and exc.code in (404, 410):
+                if isinstance(exc, urllib.error.HTTPError) and exc.code in (
+                    404,
+                    410,
+                    449,
+                ):
+                    # Gone or pow-gated: retrying within seconds never helps;
+                    # callers fall through to the next URL instead.
                     break
                 if i + 1 < attempts:
                     time.sleep(0.35 * (i + 1))
@@ -335,6 +370,14 @@ def fetch_url_bytes(
             continue
         break
     assert last is not None
+    if _soy_proxy is not None and is_soy_api_url(key):
+        # PC network pow-gated (449) while the bot fetches fine — last resort.
+        try:
+            data = _soy_proxy(key)
+        except Exception:
+            data = None
+        if data:
+            return data
     raise last
 
 

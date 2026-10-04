@@ -110,8 +110,17 @@ class UpdateProgressDialog(tk.Toplevel):
             )
         self.bar.pack(fill=tk.X)
         self.update_idletasks()
-        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
-        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        try:
+            anchored = bool(parent.winfo_viewable())
+        except Exception:
+            anchored = False
+        if anchored:
+            px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+            py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        else:
+            # Standalone parent (solo alert root): center on screen instead.
+            px = max(0, (self.winfo_screenwidth() - self.winfo_width()) // 2)
+            py = max(0, (self.winfo_screenheight() - self.winfo_height()) // 3)
         self.geometry(f"+{px}+{py}")
         self.show_front()
         from link_bridge.window_keys import bind_q_close
@@ -516,6 +525,15 @@ class LinkBridgeApp(tk.Tk):
             variable=self.omni_maximized_var,
             command=self._on_omni_maximized_toggle,
         ).pack(side=tk.LEFT, padx=(16, 0))
+        self.hardcore_fullscreen_var = tk.BooleanVar(
+            value=bool(getattr(self.cfg, "hardcore_fullscreen", False))
+        )
+        ttk.Checkbutton(
+            opts_fs,
+            text="Hardcore fullscreen (keep windows maximized)",
+            variable=self.hardcore_fullscreen_var,
+            command=self._on_hardcore_fullscreen_toggle,
+        ).pack(side=tk.LEFT, padx=(16, 0))
 
         opts_cache = ttk.Frame(root)
         opts_cache.pack(fill=tk.X, **pad)
@@ -741,6 +759,10 @@ class LinkBridgeApp(tk.Tk):
             )
         if hasattr(self, "tournament_alarm_var"):
             self.cfg.tournament_alarm = bool(self.tournament_alarm_var.get())
+        if hasattr(self, "hardcore_fullscreen_var"):
+            self.cfg.hardcore_fullscreen = bool(
+                self.hardcore_fullscreen_var.get()
+            )
         from link_bridge.config import _clamp_preview_scale, _clamp_scroll_speed
         from link_bridge.theme import normalize_theme
 
@@ -1175,6 +1197,42 @@ class LinkBridgeApp(tk.Tk):
             pass
         self._append_log(f"Bridge window state: {val}")
 
+    def _on_hardcore_fullscreen_toggle(self) -> None:
+        on = bool(self.hardcore_fullscreen_var.get())
+        self.cfg.hardcore_fullscreen = on
+        try:
+            save_config(self.cfg)
+        except Exception:
+            pass
+        if on:
+            try:
+                if str(self.state() or "") == "normal" and self.winfo_viewable():
+                    self.state("zoomed")
+            except Exception:
+                pass
+            self._append_log("Hardcore fullscreen: on.")
+        else:
+            self._append_log("Hardcore fullscreen: off.")
+
+    def _enforce_hardcore_main(self) -> None:
+        from link_bridge.hardcore import needs_rezoom
+
+        try:
+            if not bool(getattr(self.cfg, "hardcore_fullscreen", False)):
+                return
+            try:
+                state = str(self.state() or "")
+            except Exception:
+                return
+            try:
+                viewable = bool(self.winfo_viewable())
+            except Exception:
+                return
+            if needs_rezoom(state, enabled=True, viewable=viewable):
+                self.state("zoomed")
+        except Exception:
+            pass
+
     def _on_tournament_alarm_toggle(self) -> None:
         self.cfg.tournament_alarm = bool(self.tournament_alarm_var.get())
         try:
@@ -1287,11 +1345,9 @@ class LinkBridgeApp(tk.Tk):
             if day:
                 self._alarm_fired_day = day
         try:
-            self.deiconify()
-            self.lift()
+            start_loop()
         except Exception:
             pass
-        start_loop()
         self._show_tournament_alarm_dialog(preview=preview)
         if preview:
             self._append_log("Tournament alarm test (DEV).")
@@ -1300,6 +1356,10 @@ class LinkBridgeApp(tk.Tk):
             self._alarm_poll_after = self.after(90000, self._request_tournament_time)
 
     def _show_tournament_alarm_dialog(self, *, preview: bool = False) -> None:
+        # Standalone alert root: never map/focus the main window (it may be
+        # minimized, tray-hidden, or happily zoomed — all stay as they are).
+        from link_bridge import solo_window
+
         win = self._alarm_win
         if win is not None:
             try:
@@ -1309,7 +1369,7 @@ class LinkBridgeApp(tk.Tk):
                     return
             except Exception:
                 self._alarm_win = None
-        win = tk.Toplevel(self)
+        win = tk.Toplevel(solo_window.root())
         self._alarm_win = win
         win.title("Tournament alarm")
         win.resizable(False, False)
@@ -1333,10 +1393,10 @@ class LinkBridgeApp(tk.Tk):
         bind_q_close(win, on_close=self._stop_tournament_alarm_ui)
         win.update_idletasks()
         try:
-            px = self.winfo_rootx() + max(0, (self.winfo_width() - win.winfo_width()) // 2)
-            py = self.winfo_rooty() + max(
-                0, (self.winfo_height() - win.winfo_height()) // 2
-            )
+            # Center on screen: the main window may be minimized or hidden,
+            # so its coordinates are not a usable anchor.
+            px = max(0, (win.winfo_screenwidth() - win.winfo_width()) // 2)
+            py = max(0, (win.winfo_screenheight() - win.winfo_height()) // 3)
             win.geometry(f"+{px}+{py}")
         except Exception:
             pass
@@ -1561,10 +1621,22 @@ class LinkBridgeApp(tk.Tk):
         )
         self._client = client
         try:
+            from link_bridge import thumb_grid
+
+            thumb_grid.set_soy_proxy(self._make_soy_proxy(client, loop))
+        except Exception:
+            pass
+        try:
             loop.run_until_complete(client.run_forever())
         finally:
             self._client = None
             self._loop = None
+            try:
+                from link_bridge import thumb_grid
+
+                thumb_grid.set_soy_proxy(None)
+            except Exception:
+                pass
             try:
                 loop.close()
             except Exception:
@@ -1580,6 +1652,37 @@ class LinkBridgeApp(tk.Tk):
                     self._balance_chip.clear() if hasattr(self, "_balance_chip") else None,
                 )
             )
+
+    def _make_soy_proxy(self, client, loop):
+        """Blocking bot-side soy fetch for thumb worker threads.
+
+        Direct PC fetch of soybooru /api assets is often Cloudflare
+        pow-gated (449) while the bot fetches fine — workers call this
+        after direct attempts fail. Never on the Tk UI thread.
+        """
+        import base64
+
+        from link_bridge.thumb_grid import parse_soy_api_url
+
+        def _fetch(url: str) -> bytes:
+            parsed = parse_soy_api_url(url)
+            if not parsed:
+                raise ValueError("not a soy asset url")
+            post_id, kind = parsed
+            fut = asyncio.run_coroutine_threadsafe(
+                client.request_soy_bytes(post_id, kind), loop
+            )
+            body = fut.result(timeout=45)
+            if not isinstance(body, dict) or body.get("op") != "soy_bytes_ok":
+                raise RuntimeError(
+                    str((body or {}).get("error") or "soy proxy failed")
+                )
+            data = base64.b64decode(body.get("data") or "")
+            if not data:
+                raise ValueError("empty body")
+            return data
+
+        return _fetch
 
     def _apply_balance_body(self, body: dict) -> None:
         self._set_balance_chips(body)
@@ -1930,6 +2033,14 @@ class LinkBridgeApp(tk.Tk):
                 on_mirror=self._on_omni_mirror,
             )
             self._omni_host = host
+            try:
+                from link_bridge.hardcore import bind_hardcore
+
+                bind_hardcore(
+                    host, lambda: bool(getattr(self.cfg, "hardcore_fullscreen", False))
+                )
+            except Exception:
+                pass
             if hasattr(self, "_balance_chip"):
                 try:
                     txt = str(self._balance_chip._lbl.cget("text") or "").strip()
@@ -2192,6 +2303,12 @@ class LinkBridgeApp(tk.Tk):
             on_log=self._append_log,
         )
         panel.pack(fill=tk.BOTH, expand=True)
+        try:
+            from link_bridge import themes_search_patch
+
+            themes_search_patch.install(panel)
+        except Exception:
+            pass
         # Keep Conjure after Themes when both exist.
         if self._conjure_tab is not None:
             try:
@@ -2416,6 +2533,14 @@ class LinkBridgeApp(tk.Tk):
                 self.state("zoomed")
         except Exception:
             pass
+        try:
+            from link_bridge import market_lot_patch
+
+            market_lot_patch.set_hardcore_fullscreen(
+                lambda: bool(getattr(self.cfg, "hardcore_fullscreen", False))
+            )
+        except Exception:
+            pass
 
     def _enable_geo_persist(self) -> None:
         self._geo_ready = True
@@ -2425,6 +2550,11 @@ class LinkBridgeApp(tk.Tk):
         # Persist maximize/restore without waiting for quit (force-kill used to lose it).
         if not self._geo_ready or self._quitting or not self.winfo_viewable():
             return
+        if bool(getattr(self.cfg, "hardcore_fullscreen", False)):
+            try:
+                self.after_idle(self._enforce_hardcore_main)
+            except Exception:
+                pass
         if self._geo_save_after is not None:
             try:
                 self.after_cancel(self._geo_save_after)
@@ -2610,28 +2740,35 @@ class LinkBridgeApp(tk.Tk):
             info = check_for_update(self.cfg)
         except Exception as exc:
             if not silent:
+                from link_bridge import solo_window
+
                 self._ui(
-                    lambda: messagebox.showerror(
+                    lambda: solo_window.show_error(
                         "Harem Link Bridge", f"Update check failed:\n{exc}"
                     )
                 )
             return
         if info is None:
             if not silent:
+                from link_bridge import solo_window
+
                 self._ui(
                     lambda: (
                         self.status_var.set(f"Up to date (v{__version__})"),
                         self._append_log(f"Up to date (v{__version__})"),
-                        messagebox.showinfo(
-                            "Harem Link Bridge", f"You're on the latest version (v{__version__})."
+                        solo_window.show_info(
+                            "Harem Link Bridge",
+                            f"You're on the latest version (v{__version__}).",
                         ),
                     )
                 )
             return
 
         def _ask() -> None:
+            from link_bridge import solo_window
+
             self._append_log(f"Update available: v{info.version}")
-            ok = messagebox.askyesno(
+            ok = solo_window.ask_yes_no(
                 "Harem Link Bridge",
                 f"Version {info.version} is available (you have {__version__}).\n\n"
                 "Download and install now? (~1–2 min on a normal connection)\n\n"
@@ -2654,7 +2791,11 @@ class LinkBridgeApp(tk.Tk):
         ready = threading.Event()
 
         def _open_dialog() -> None:
-            dialog_holder[0] = UpdateProgressDialog(self, info.version)
+            from link_bridge import solo_window
+
+            dialog_holder[0] = UpdateProgressDialog(
+                solo_window.root(), info.version
+            )
             dialog_holder[0].show_front()
             ready.set()
 
@@ -2688,9 +2829,11 @@ class LinkBridgeApp(tk.Tk):
             def _fail() -> None:
                 # No _force_window_front here: the main window may be hidden
                 # in the tray - the error box below is the notification.
+                from link_bridge import solo_window
+
                 self.status_var.set(f"Update failed: {exc}")
                 self._append_log(f"Update failed: {exc}")
-                messagebox.showerror("Harem Link Bridge", f"Update failed:\n{exc}")
+                solo_window.show_error("Harem Link Bridge", f"Update failed:\n{exc}")
 
             self._ui(_fail)
             return
@@ -2705,8 +2848,10 @@ class LinkBridgeApp(tk.Tk):
 
             self._ui(_done)
         else:
+            from link_bridge import solo_window
+
             self._ui(
-                lambda: messagebox.showinfo(
+                lambda: solo_window.show_info(
                     "Harem Link Bridge",
                     f"Downloaded v{info.version} (dev mode — not applying).",
                 )

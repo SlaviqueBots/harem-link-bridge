@@ -126,3 +126,46 @@ BridgeClient._handle = _handle_with_bridge_market  # type: ignore[name-defined]
 BridgeClient.request_market_sell = request_market_sell  # type: ignore[name-defined]
 BridgeClient.request_market_gift = request_market_gift  # type: ignore[name-defined]
 BridgeClient.request_market_page_mine = request_market_page_mine  # type: ignore[name-defined]
+
+# Soy bytes proxy: the bot fetches /api/booru/posts/* bytes for pow-gated
+# PC networks. Per-request routing tokens so parallel tile fetches never
+# resolve the wrong future (same lesson as market_page_mine).
+_soy_bytes_counter = 0
+
+
+async def request_soy_bytes(self, post_id: int, kind: str = "thumbnail", *, timeout: float = 30.0):  # noqa: ANN001
+    global _soy_bytes_counter
+    _soy_bytes_counter += 1
+    req = f"soy_bytes:{int(post_id)}:{str(kind or 'thumbnail')}:{_soy_bytes_counter}"
+    return await self._request(
+        req,
+        {
+            "op": "soy_bytes",
+            "post_id": int(post_id),
+            "kind": str(kind or "thumbnail"),
+            "req": req,
+        },
+        timeout=timeout,
+    )
+
+
+_prev_soy_handle = BridgeClient._handle  # type: ignore[name-defined]
+
+
+async def _handle_with_soy_bytes(self, message):  # noqa: ANN001
+    try:
+        body = json.loads(message)
+    except (TypeError, json.JSONDecodeError):
+        return await _prev_soy_handle(self, message)
+    op = body.get("op") if isinstance(body, dict) else None
+    if op in ("soy_bytes_ok", "soy_bytes_err"):
+        fut = self._pending.pop(body.get("req") if isinstance(body, dict) else None, None)
+        if fut is not None and not fut.done():
+            fut.set_result(body)
+        self.on_message(body)
+        return None
+    return await _prev_soy_handle(self, message)
+
+
+BridgeClient._handle = _handle_with_soy_bytes  # type: ignore[name-defined]
+BridgeClient.request_soy_bytes = request_soy_bytes  # type: ignore[name-defined]
